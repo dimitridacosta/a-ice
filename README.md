@@ -4,12 +4,42 @@ Petit widget KDE Plasma — chat minimaliste branché à ton serveur `llama.cpp`
 
 ## Fonctionnalités
 
-- Interface chat ultra-minimaliste, style KDE natif
-- Connexion à ton serveur llama.cpp local (localhost:8080 par défaut)
-- Support streaming (à venir)
-- Thème sombre intégré
+- **Overlay verre (glassmorphism)** : pas de fenêtre classique. Fond
+  transparent, blur KWin appliqué uniquement derrière la barre et les
+  bulles — identique au rendu du panel/menu Plasma (thème Utterly-Round).
+- **Barre de prompt fixe** en bas à droite, juste au-dessus du panel KDE :
+  pill translucide avec icône d'envoi épurée.
+- **Bulles qui montent** : une bulle par tour (utilisateur à droite, assistant
+  à gauche). Les plus récentes s'empilent en bas, les anciennes montent ;
+  scroll pour remonter dans l'historique.
+- **Réflexion en direct** : le thinking s'affiche au fil de l'eau, puis se
+  réduit automatiquement quand la réponse commence à streamer — re-dépliable
+  d'un clic sur l'en-tête « 💭 Réflexion ».
+- Connexion à un provider OpenAI-compatible (llama.cpp local par défaut).
+- Streaming SSE (raisonnement + contenu).
 
 ## Build
+
+> ⚠️ **Toutes les commandes de build doivent impérativement être lancées
+> dans la distrobox `dev-aice` dédiée à ce projet** (Fedora 44, pour matcher
+> Bazzite et avoir KF6/Qt6). Ne pas builder sur l'hôte Bazzite (atomic,
+> lecture seule) ni dans une autre box.
+>
+> ```bash
+> distrobox enter --name dev-aice
+> ```
+
+Création de la box (une seule fois, sur l'hôte Bazzite) :
+
+```bash
+distrobox create --name dev-aice --image fedora:44
+distrobox enter --name dev-aice
+sudo dnf install -y gcc-c++ make cmake pkgconf-pkg-config \
+    qt6-qtbase-devel qt6-qtwayland-devel \
+    extra-cmake-modules kf6-kwindowsystem-devel
+```
+
+Puis, **dans `dev-aice`** :
 
 ```bash
 mkdir build && cd build
@@ -18,6 +48,8 @@ make -j$(nproc)
 ```
 
 ## Install
+
+**Dans `dev-aice`** :
 
 ```bash
 sudo cmake --install .
@@ -68,12 +100,17 @@ OpenAI-compatible).
 ## Stack
 
 - C++17
-- Qt5 + Plasma SDK (KF5)
-- HTTP client natif Qt pour les requêtes au serveur llama.cpp
+- Qt6 + KF6::WindowSystem (blur KWin via le protocole `ext_background_effect_v1`)
+- HTTP client natif Qt pour les requêtes au provider OpenAI-compatible
+
+## Raccourcis
+
+- `Entrée` : envoyer
+- `Échap` : masquer la fenêtre
+- `Ctrl+Q` : quitter
 
 ## Roadmap
 
-- [ ] Streaming mode (server-sent events)
 - [ ] Configuration GUI (adresse serveur, température, tokens max)
 - [ ] Support multi-modèle
 - [ ] Icône personnalisée

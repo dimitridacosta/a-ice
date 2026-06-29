@@ -7,6 +7,11 @@
 
 class ChatWidget;
 
+/**
+ * Fenêtre overlay verre : frameless, translucide, ancrée en bas à droite
+ * juste au-dessus du panel KDE. Pas de chrome, pas de fond — seul le verre
+ * (barre + bulles) apparaît, flouté par KWin (glassmorphism Utterly-Round).
+ */
 class AiceApplet
 {
 public:
@@ -17,14 +22,16 @@ public:
     void show();
     void closeApp();
 
-    /// Charge la config depuis un fichier JSON (vide = emplacement par défaut).
     void loadConfig(const QString &path);
-    /// Override runtime de l'URL du provider (prioritaire sur la config).
     void overrideServerUrl(const QString &url);
 
 private:
     void setupUI();
     void setupConnections();
+    /// Repositionne la fenêtre en bas à droite de l'écran courant.
+    void placeWindow();
+    /// Gère Ctrl+Q (quitter) et Échap (masquer).
+    bool handleShortcut(class QKeyEvent *e);
 
     Config m_config;
     std::unique_ptr<QMainWindow> m_window;

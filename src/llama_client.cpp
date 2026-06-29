@@ -41,6 +41,7 @@ void LlamaClient::sendMessages(const QList<ChatMessage> &messages)
     }
     m_isRequesting = true;
     m_sseBuffer.clear();
+    m_inThinkingContent = false;
     makeRequest(messages);
 }
 
@@ -48,8 +49,13 @@ void LlamaClient::cancel()
 {
     if (m_currentReply) {
         m_currentReply->abort();
-        m_currentReply->deleteLater();
-        m_currentReply = nullptr;
+        // abort() peut déclencher finished() de manière synchrone : le lambda
+        // connecté met alors m_currentReply à nullptr. On re-vérifie avant
+        // d'appeler deleteLater() pour éviter un null-deref → crash.
+        if (m_currentReply) {
+            m_currentReply->deleteLater();
+            m_currentReply = nullptr;
+        }
     }
     m_isRequesting = false;
     m_sseBuffer.clear();
@@ -102,7 +108,10 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
             QNetworkReply::NetworkError err = m_currentReply->error();
             int httpCode = m_currentReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
-            if (err != QNetworkReply::NoError && err != QNetworkReply::OperationCanceledError) {
+            if (err == QNetworkReply::OperationCanceledError) {
+                // Annulation utilisateur : onStopClicked() gère le reset, on
+                // n'émet rien (évite double reset + crash si synchrone).
+            } else if (err != QNetworkReply::NoError) {
                 QString msg = QStringLiteral("Réseau: %1 (HTTP %2)")
                                   .arg(m_currentReply->errorString())
                                   .arg(httpCode);
@@ -127,7 +136,9 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
             int httpCode = m_currentReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             qInfo() << "[a-ice] ← HTTP" << httpCode << "(" << body.size() << "bytes)";
 
-            if (err != QNetworkReply::NoError) {
+            if (err == QNetworkReply::OperationCanceledError) {
+                // Annulation utilisateur : on ne fait rien.
+            } else if (err != QNetworkReply::NoError) {
                 QString msg = QStringLiteral("Réseau: %1").arg(m_currentReply->errorString());
                 qWarning() << "[a-ice] error:" << msg;
                 emit requestError(msg);
@@ -192,17 +203,59 @@ void LlamaClient::handleStreamLine(const QByteArray &line)
     const QJsonObject delta = choices.at(0).toObject()
                                   .value(QStringLiteral("delta")).toObject();
 
+    // --- reasoning_content (champ dédié, ex. Qwen3 via OpenRouter / llama.cpp récent) ---
     if (delta.contains(QStringLiteral("reasoning_content"))) {
         QString t = delta.value(QStringLiteral("reasoning_content")).toString();
+        // Certains serveurs envoient </think> dans reasoning_content comme séparateur.
+        if (t.endsWith(QStringLiteral("</think>")))
+            t.chop(8);
         if (!t.isEmpty()) emit thinkingChunk(t);
     }
+
+    // --- content (réponse finale, ou <think>...</think> pour les serveurs anciens) ---
     if (delta.contains(QStringLiteral("content"))) {
         QString t = delta.value(QStringLiteral("content")).toString();
-        if (!t.isEmpty()) emit contentChunk(t);
+        if (t.isEmpty()) return;
+
+        if (m_inThinkingContent) {
+            // On était dans un bloc <think> transmis via content.
+            int closeIdx = t.indexOf(QStringLiteral("</think>"));
+            if (closeIdx != -1) {
+                // Partie avant </think> : encore du thinking.
+                if (closeIdx > 0)
+                    emit thinkingChunk(t.left(closeIdx));
+                m_inThinkingContent = false;
+                // Partie après </think> : vraie réponse.
+                QString rest = t.mid(closeIdx + 8).trimmed();
+                if (!rest.isEmpty()) emit contentChunk(rest);
+            } else {
+                emit thinkingChunk(t);
+            }
+        } else if (t.startsWith(QStringLiteral("<think>"))) {
+            // Nouveau bloc thinking démarré dans content.
+            m_inThinkingContent = true;
+            QString after = t.mid(7);
+            int closeIdx = after.indexOf(QStringLiteral("</think>"));
+            if (closeIdx != -1) {
+                // Bloc complet en un seul chunk.
+                if (closeIdx > 0) emit thinkingChunk(after.left(closeIdx));
+                m_inThinkingContent = false;
+                QString rest = after.mid(closeIdx + 8).trimmed();
+                if (!rest.isEmpty()) emit contentChunk(rest);
+            } else if (!after.isEmpty()) {
+                emit thinkingChunk(after);
+            }
+        } else {
+            // Contenu normal : on filtre les </think> parasites
+            // (certains serveurs les envoient comme premier chunk de content).
+            if (t.startsWith(QStringLiteral("</think>")))
+                t = t.mid(8).trimmed();
+            if (!t.isEmpty()) emit contentChunk(t);
+        }
     }
 }
 
-QString LlamaClient::parseChatCompletion(const QByteArray &body) const
+QString LlamaClient::parseChatCompletion(const QByteArray &body)
 {
     // Utilisé uniquement en mode non-streaming.
     QJsonParseError parseError;
@@ -222,11 +275,27 @@ QString LlamaClient::parseChatCompletion(const QByteArray &body) const
     const QJsonObject message = choices.at(0).toObject()
                                     .value(QStringLiteral("message")).toObject();
 
-    QString content = message.value(QStringLiteral("content")).toString();
+    QString content   = message.value(QStringLiteral("content")).toString();
     QString reasoning = message.value(QStringLiteral("reasoning_content")).toString();
 
-    if (content.isEmpty() && !reasoning.isEmpty()) {
-        return reasoning;
+    // Si reasoning_content est absent, on tente d'extraire <think>...</think>
+    // du champ content (llama.cpp sans champ dédié).
+    if (reasoning.isEmpty() && content.contains(QStringLiteral("<think>"))) {
+        static const QRegularExpression thinkRe(
+            QStringLiteral("<think>(.*?)</think>\\s*"),
+            QRegularExpression::DotMatchesEverythingOption);
+        const auto match = thinkRe.match(content);
+        if (match.hasMatch()) {
+            reasoning = match.captured(1).trimmed();
+            content   = content.mid(match.capturedEnd(0)).trimmed();
+        }
     }
+
+    // Émet le thinking si présent (non-streaming : un seul gros chunk).
+    if (!reasoning.isEmpty())
+        emit thinkingChunk(reasoning);
+
+    if (content.isEmpty() && !reasoning.isEmpty())
+        return reasoning; // modèle thinking-only
     return content;
 }

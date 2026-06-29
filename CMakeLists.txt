@@ -5,11 +5,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-# Plasma SDK (KF5)
+# KF6 / Qt6 (Plasma 6 / Bazzite)
 find_package(ECM REQUIRED NO_MODULE PATHS /usr/share/ECM/cmake)
 list(APPEND CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
-find_package(KF5 REQUIRED COMPONENTS Plasma CoreAddons)
-find_package(Qt5 REQUIRED COMPONENTS Widgets Network)
+find_package(KF6 REQUIRED COMPONENTS WindowSystem)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+find_package(LayerShellQt CONFIG REQUIRED)
+
+# Activer MOC/AUTORCC pour Qt6.
+set(CMAKE_AUTOMOC ON)
 
 # Main executable (standalone + applet)
 add_executable(a-ice
@@ -19,6 +23,8 @@ add_executable(a-ice
     src/ChatMessage.h
     src/ChatWidget.h
     src/ChatWidget.cpp
+    src/Bubble.h
+    src/Bubble.cpp
     src/llama_client.h
     src/llama_client.cpp
     src/Config.h
@@ -26,15 +32,10 @@ add_executable(a-ice
 )
 
 target_link_libraries(a-ice
-    KF5::Plasma
-    Qt5::Widgets
-    Qt5::Network
-)
-
-target_include_directories(a-ice PRIVATE
-    ${KF5Plasma_INCLUDES}
-    ${Qt5Widgets_INCLUDE_DIRS}
-    ${Qt5Network_INCLUDE_DIRS}
+    KF6::WindowSystem
+    LayerShellQt::Interface
+    Qt6::Widgets
+    Qt6::Network
 )
 
 # Installation (appelable après build: sudo cmake --install .)

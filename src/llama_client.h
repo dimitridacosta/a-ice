@@ -49,13 +49,14 @@ private:
     void makeRequest(const QList<ChatMessage> &messages);
     void parseSseChunk(const QByteArray &data);
     void handleStreamLine(const QByteArray &line);
-    QString parseChatCompletion(const QByteArray &body) const;
+    QString parseChatCompletion(const QByteArray &body);
 
     QString m_serverUrl;
     Config m_config;
     QNetworkAccessManager *m_nam = nullptr;
     QNetworkReply *m_currentReply = nullptr;
     bool m_isRequesting = false;
+    bool m_inThinkingContent = false; // état pour <think> dans le champ content
 
     // Buffer SSE : les chunks peuvent arriver coupés au milieu d'une ligne.
     QByteArray m_sseBuffer;

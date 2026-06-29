@@ -1,82 +1,95 @@
 #pragma once
 
 #include <QWidget>
-#include <QLabel>
+#include <QScrollArea>
 #include <QTextEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
-#include <QScrollArea>
-#include <QFrame>
 #include <QList>
 #include <QScopedPointer>
+#include <QTimer>
+#include <QString>
 #include "ChatMessage.h"
 
+class Bubble;
 class LlamaClient;
 class Config;
 
+/**
+ * Overlay verre (glass) : pas de fenêtre classique.
+ *
+ * - La barre de prompt est fixe en bas (la fenêtre est positionnée
+ *   bas-droite au-dessus du panel KDE par AiceApplet).
+ * - Les bulles (une par tour) montent dans une zone scrollable transparente,
+ *   les plus récentes en bas.
+ * - La réflexion s'affiche en direct, puis se réduit quand la réponse
+ *   commence à streamer (re-dépliable).
+ * - Le blur KWin est appliqué uniquement derrière les bulles + la barre,
+ *   le reste de la fenêtre est transparent → vrai glassmorphism.
+ */
 class ChatWidget : public QWidget
 {
     Q_OBJECT
 
 public:
-        explicit ChatWidget(QWidget *parent = nullptr);
-        ~ChatWidget();
+    explicit ChatWidget(QWidget *parent = nullptr);
+    ~ChatWidget();
 
     void addMessage(const ChatMessage &msg);
-    void clearMessages();
     QString getServerUrl() const;
     void setServerUrl(const QString &url);
-    /// Applique la config (provider + modèle) au client.
     void applyConfig(const Config &config);
 
 signals:
     void messageSent(const QString &text);
     void messageReceived(const QString &text);
 
+protected:
+    void showEvent(QShowEvent *) override;
+    void resizeEvent(QResizeEvent *) override;
+    void paintEvent(QPaintEvent *) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private slots:
     void onSendClicked();
-    void onSendMessage(const QString &text);
-
-    // Streaming : mises à jour live de la bulle en cours.
+    void onStopClicked();
     void onThinkingChunk(const QString &text);
     void onContentChunk(const QString &text);
     void onResponseComplete();
     void onRequestError(const QString &error);
 
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override;
-
 private:
     void setupUI();
-    void addMessageBubble(const ChatMessage &msg);
-    QString formatMessage(const ChatMessage &msg);
-    void showTypingIndicator();
-    void hideTypingIndicator();
-    void showError(const QString &error);
-
-    /// Crée la bulle assistant en cours (avec zones thinking + content).
+    void setupGlass();
+    void onSendMessage(const QString &text);
     void startAssistantBubble();
-    /// Ajoute du texte à la zone thinking de la bulle en cours.
-    void appendThinking(const QString &text);
-    /// Ajoute du texte à la zone content de la bulle en cours.
-    void appendContent(const QString &text);
-    /// Scroll automatique vers le bas.
     void scrollToBottom();
+
+    /// Bascule le bouton entre “envoyer” et “stop” pendant la génération.
+    void setGenerating(bool generating);
+
+    /// Recalcule et applique la region blur KWin (union bulles + barre).
+    void updateBlurRegion();
+    /// Re-planifie un recalcul de blur (throttled).
+    void scheduleBlurUpdate();
+
+    /// Region blur/mask actuelle (pour ne rien reapply si inchangée → anti-clignote).
+    QRegion m_lastRegion;
 
     QScopedPointer<LlamaClient> m_client;
     QScrollArea *m_scrollArea = nullptr;
-    QWidget *m_messagesContainer = nullptr;
-    QFrame *m_typingIndicator = nullptr;
+    QWidget    *m_messagesContainer = nullptr;
+    QVBoxLayout *m_messagesLayout = nullptr;
+
+    QFrame     *m_promptBar = nullptr;
+    QTextEdit *m_promptEdit = nullptr;
+    QPushButton *m_sendButton = nullptr;
 
     // Bulle assistant en cours de génération.
-    QFrame *m_currentBubble = nullptr;
-    QLabel *m_currentThinkingLabel = nullptr;
-    QLabel *m_currentContentLabel = nullptr;
-    QString m_currentThinking;
-    QString m_currentContent;
+    Bubble *m_currentBubble = nullptr;
+    QString m_currentContent; // contenu de la réponse en cours (pour l'historique)
 
-    QTextEdit *m_messageTextEdit = nullptr;
-    QPushButton *m_sendButton = nullptr;
+    QTimer m_blurTimer;
 
     bool m_isTyping = false;
     QList<ChatMessage> m_messages;
