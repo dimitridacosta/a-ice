@@ -6,6 +6,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
+#include <QTextStream>
+#include <QDebug>
 
 Config::Config()
 {
@@ -98,5 +100,40 @@ bool Config::load(const QString &path)
         m_provider.apiUrl += '/';
     }
 
+    // Chargement du SOUL.md (prompt système) : à côté de config.json,
+    // sinon fallback sur share/a-ice/SOUL.md installé.
+    const QString configDir = QFileInfo(target).absolutePath();
+    m_soulPath = loadSoul(configDir);
+    if (!m_soulPath.isEmpty()) {
+        QFile sf(m_soulPath);
+        if (sf.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            m_systemPrompt = QString::fromUtf8(sf.readAll());
+            sf.close();
+            qInfo() << "[a-ice] SOUL chargé:" << m_soulPath
+                    << "(" << m_systemPrompt.size() << "chars)";
+        }
+    } else {
+        m_systemPrompt.clear();
+        qInfo() << "[a-ice] SOUL.md absent (pas de prompt système)";
+    }
+
     return true;
+}
+
+QString Config::loadSoul(const QString &configDir)
+{
+    // 1. À côté de config.json (~/.config/a-ice/SOUL.md).
+    const QString local = QDir(configDir).absoluteFilePath(QStringLiteral("SOUL.md"));
+    if (QFileInfo::exists(local))
+        return local;
+
+    // 2. share/a-ice/SOUL.md installé (AppDataLocation couvre
+    //    ~/.local/share/a-ice, /usr/local/share/a-ice, /usr/share/a-ice).
+    const QStringList dirs = QStandardPaths::standardLocations(QStandardPaths::AppDataLocation);
+    for (const QString &d : dirs) {
+        const QString p = QDir(d).absoluteFilePath(QStringLiteral("SOUL.md"));
+        if (QFileInfo::exists(p))
+            return p;
+    }
+    return {};
 }

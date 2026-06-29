@@ -42,4 +42,4 @@ target_link_libraries(a-ice
 install(TARGETS a-ice DESTINATION bin)
 install(FILES metadata.xml aice.desktop DESTINATION share/plasma/quickapplets/a-ice)
 install(FILES metadata.xml aice.desktop DESTINATION share/plasma/services)
-install(FILES config.example.json DESTINATION share/a-ice)
+install(FILES config.example.json SOUL.example.md DESTINATION share/a-ice)

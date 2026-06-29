@@ -66,6 +66,15 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
     QJsonObject json;
     QJsonArray messagesArray;
 
+    // Prompt système (SOUL.md) injecté en tête, role="system".
+    const QString sys = m_config.systemPrompt();
+    if (!sys.trimmed().isEmpty()) {
+        QJsonObject sysObj;
+        sysObj["role"] = QStringLiteral("system");
+        sysObj["content"] = sys;
+        messagesArray.append(sysObj);
+    }
+
     for (const auto &msg : messages) {
         QJsonObject msgObj;
         msgObj["role"] = msg.role;

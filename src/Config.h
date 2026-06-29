@@ -27,6 +27,11 @@
  *
  * Si le fichier est absent ou invalide, on retombe sur les valeurs par défaut
  * (modèle local qwen36-28b-reap sur http://localhost:18081/v1).
+ *
+ * SOUL.md : un fichier de prompt système décrivant la personnalité de l'agent.
+ * Emplacement par défaut : ~/.config/a-ice/SOUL.md (à côté de config.json).
+ * Fallback : share/a-ice/SOUL.md (installé à côté de config.example.json).
+ * Le contenu est injecté en tête des messages comme message role="system".
  */
 class Config
 {
@@ -55,6 +60,11 @@ public:
     const Provider &provider() const { return m_provider; }
     const Model &model() const { return m_model; }
 
+    /// Prompt système lu depuis SOUL.md (vide si absent).
+    QString systemPrompt() const { return m_systemPrompt; }
+    /// Chemin du SOUL.md effectivement utilisé (vide si aucun trouvé).
+    QString soulPath() const { return m_soulPath; }
+
     /// Charge la config depuis `path`. Si `path` est vide, utilise l'emplacement
     /// par défaut (~/.config/a-ice/config.json). Retourne false si le fichier
     /// est absent ou invalide (auquel cas les valeurs par défaut sont utilisées).
@@ -66,8 +76,14 @@ public:
 private:
     void applyDefaults();
     static QString defaultConfigPath();
+    /// Tente de charger SOUL.md : d'abord à côté de config.json,
+    /// sinon dans les dossiers share/a-ice installés. Retourne le chemin
+    /// utilisé (vide si rien trouvé).
+    QString loadSoul(const QString &configDir);
 
     QString m_configPath;
+    QString m_soulPath;
+    QString m_systemPrompt;
     Provider m_provider;
     Model m_model;
 };

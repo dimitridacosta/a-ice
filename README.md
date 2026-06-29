@@ -91,6 +91,23 @@ ses valeurs par défaut (modèle local `qwen36-28b-reap` sur
 Par défaut, A-ICE appelle `${provider.api_url}/chat/completions` (endpoint
 OpenAI-compatible).
 
+### SOUL.md — personnalité de l'agent
+
+A-ICE lit en plus un fichier **SOUL.md** (Markdown texte brut) dont le contenu
+est injecté en tête des messages comme message `role="system"`. C'est là que
+se définit la personnalité de l'agent (toi, ddBot).
+
+- Emplacement principal : `~/.config/a-ice/SOUL.md` (à côté de `config.json`)
+- Fallback : `share/a-ice/SOUL.md` (installé à côté de `config.example.json`)
+- Si aucun SOUL.md n'est trouvé, aucun message système n'est envoyé.
+
+Un exemple est fourni dans `SOUL.example.md`. Pour le personnaliser :
+
+```bash
+cp SOUL.example.md ~/.config/a-ice/SOUL.md
+$EDITOR ~/.config/a-ice/SOUL.md
+```
+
 ## Lancer ton serveur llama.cpp
 
 ```bash
