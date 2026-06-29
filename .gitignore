@@ -1,0 +1,15 @@
+# Builds
+build/
+*.o
+*.so
+*.a
+
+# IDE / cache
+.vscode/
+.zed/
+__pycache__/
+*.pyc
+
+# Secrets (au cas où)
+.env
+.env.*

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<metadata>
+  <name>A-ICE</name>
+  <message>A-ICE — petit chat KDE branché à ton llama.cpp local</message>
+  <license>MIT</license>
+  <category>Utility</category>
+  <author>Dimitri Da Costa</author>
+  <email>dimitri@itflow.io</email>
+  <website>https://itflow.io</website>
+  <version>0.1.0</version>
+  <platformapi>5.0</platformapi>
+  <minversion>5.0</minversion>
+  <maxversion>99.99</maxversion>
+  <screenshot>screenshot.png</screenshot>
+  <translatable>true</translatable>
+</metadata>

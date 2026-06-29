@@ -1,0 +1,13 @@
+{
+  "provider": {
+    "name": "openai_compatible",
+    "api_url": "http://localhost:18081/v1",
+    "prompt_format": "qwen"
+  },
+  "model": {
+    "name": "qwen36-28b-reap",
+    "temperature": 0.7,
+    "max_tokens": 65536,
+    "stream": true
+  }
+}

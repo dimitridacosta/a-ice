@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=A-ICE
+Comment=A-ICE — petit chat KDE branché à ton llama.cpp local
+Exec=a-ice
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;Development;
+Keywords=chat;llama;ai;kde;plasma;
+StartupNotify=true
