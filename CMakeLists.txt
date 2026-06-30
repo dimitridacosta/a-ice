@@ -35,6 +35,8 @@ add_executable(a-ice
     src/ToolRegistry.cpp
     src/tools/TerminalTool.h
     src/tools/TerminalTool.cpp
+    src/tools/TerminalSafety.h
+    src/tools/TerminalSafety.cpp
     src/tools/BraveSearchTool.h
     src/tools/BraveSearchTool.cpp
     src/tools/WebFetchTool.h
@@ -53,3 +55,13 @@ install(TARGETS a-ice DESTINATION bin)
 install(FILES metadata.xml aice.desktop DESTINATION share/plasma/quickapplets/a-ice)
 install(FILES metadata.xml aice.desktop DESTINATION share/plasma/services)
 install(FILES config.example.json SOUL.example.md DESTINATION share/a-ice)
+
+# --- Test unitaire hardline -------------------------------------------------
+# Link uniquement TerminalSafety.cpp + Qt6::Core : le terminal (QProcess) n'est
+# JAMAIS compile dans ce test -> physiquement incapable d'executer une commande.
+add_executable(test_hardline
+    tests/test_hardline.cpp
+    src/tools/TerminalSafety.h
+    src/tools/TerminalSafety.cpp
+)
+target_link_libraries(test_hardline PRIVATE Qt6::Core)

@@ -3,6 +3,7 @@
 #include <QCommandLineParser>
 #include "AiceApplet.h"
 #include "Config.h"
+#include "tools/TerminalTool.h"
 
 int main(int argc, char *argv[])
 {
@@ -24,6 +25,12 @@ int main(int argc, char *argv[])
     parser.addOption(configOption);
     parser.addOption(serverUrlOption);
     parser.process(app);
+
+    // Filet de test terminal : A_ICE_TERMINAL_TEST=1 → aucune commande n'atteint bash.
+    // Activé au lancement, non modifiable par le modèle depuis l'intérieur de l'app.
+    if (qEnvironmentVariableIsSet("A_ICE_TERMINAL_TEST")) {
+        TerminalTool::setTestMode(true);
+    }
 
     auto w = std::make_unique<AiceApplet>();
     w->init();

@@ -1,10 +1,15 @@
 #include "TerminalTool.h"
+#include "TerminalSafety.h"
 
 #include <QDir>
 #include <QProcess>
 #include <QJsonArray>
 #include <algorithm>
 #include <memory>
+
+bool TerminalTool::s_testMode = false;
+
+// setTestMode est définie inline dans le header.
 
 Tool::Spec TerminalTool::spec() const
 {
@@ -42,6 +47,20 @@ void TerminalTool::execute(const QJsonObject &args,
     const QString command = args.value(QStringLiteral("command")).toString().trimmed();
     if (command.isEmpty()) {
         cb(false, QStringLiteral("[a-ice] terminal: empty command"));
+        return;
+    }
+
+    // Couche 1 — Hardline : block inconditionnel, avant toute exécution.
+    if (const QString blocked = checkHardline(command); !blocked.isEmpty()) {
+        cb(false, QStringLiteral("[a-ice] terminal: %1").arg(blocked));
+        return;
+    }
+
+    // Filet de test ultime : en test mode, aucune commande n'atteint bash.
+    // Activé au lancement (env var A_ICE_TERMINAL_TEST) — non pilotable par le modèle.
+    if (s_testMode) {
+        cb(true, QStringLiteral("[TEST MODE] terminal command NOT executed: \"%1\"\n"
+                                "TEST TERMINAL OUTPUT").arg(command));
         return;
     }
 
