@@ -6,6 +6,97 @@
 #include <QResizeEvent>
 #include <QTimer>
 #include <QLinearGradient>
+#include <QTextDocument>
+#include <QTextCursor>
+#include <QTextBlock>
+#include <QFontInfo>
+#include <QRegularExpression>
+#include <cmath>
+
+// --- Rendu Markdown -> HTML (Qt6 natif) ---
+// QTextDocument::setMarkdown() produit un document riche qu'on serialise en HTML
+// pour le QLabel. On force la police, la couleur du theme et un peu d'air
+// (marges titres/paragraphes) pour que le rendu colle au glass.
+static const char *kMdTextColor = "#e9eaee";
+
+// CSS injecte dans le <style> emis par Qt : styling visuel uniquement.
+// NB : les marges p/h1-h6 sont ecrasees par le style inline emis par Qt
+// (margin-top:0; etc.), donc on les cuit dans les QTextBlockFormat via
+// applyMdSpacing() ci-dessous.
+static const QString kMdCss = QStringLiteral(
+    "blockquote { margin: 6px 0; padding-left: 10px; color: rgba(239,240,241,170); border-left: 2px solid rgba(255,255,255,60); }"
+    "code { background: rgba(255,255,255,22); padding: 1px 4px; border-radius: 4px; }"
+    "pre  { background: rgba(255,255,255,18); padding: 8px; border-radius: 6px; margin: 6px 0; }"
+    "table { border-collapse: collapse; margin: 8px 0; }"
+    "th, td { border: 1px solid rgba(255,255,255,70); padding: 4px 8px; }"
+    "th { background: rgba(255,255,255,28); font-weight: 600; }"
+    "hr  { border: none; border-top: 1px solid rgba(255,255,255,50); margin: 8px 0; }"
+);
+
+// Cuit les marges (air) dans les QTextBlockFormat : Qt emet ces marges en inline
+// dans le HTML final, donc elles sont toujours honorees par le QLabel.
+// - Paragraphes/listes : 5px top/bottom
+// - Titres (police plus grande que la base) : 14px top, 7px bottom
+// - Premier bloc : top=0 ; dernier bloc : bottom=0 (bulle nette aux bords)
+static void applyMdSpacing(QTextDocument &doc)
+{
+    const qreal base = 13.0;
+    QTextBlock first = doc.firstBlock();
+    QTextBlock last  = doc.lastBlock();
+    for (QTextBlock b = doc.firstBlock(); b.isValid(); b = b.next()) {
+        const QTextCharFormat cf = b.charFormat();
+        const int px = QFontInfo(cf.font()).pixelSize();
+        const bool heading = px > int(base) + 1; // h1-h4 sont plus grands que 13px
+        qreal top = heading ? 14.0 : 5.0;
+        qreal bot = heading ? 7.0  : 5.0;
+        if (b == first) top = 0.0;
+        if (b == last)  bot = 0.0;
+        QTextBlockFormat bf = b.blockFormat();
+        bf.setTopMargin(top);
+        bf.setBottomMargin(bot);
+        QTextCursor c(b);
+        c.setBlockFormat(bf);
+    }
+}
+
+static QString renderMarkdown(const QString &md)
+{
+    if (md.isEmpty()) return {};
+    QTextDocument doc;
+    QFont f;
+    f.setPixelSize(13);
+    doc.setDefaultFont(f);
+    // Dialecte GitHub = CommonMark + tables + fenced code + task lists.
+    doc.setMarkdown(md, QTextDocument::MarkdownDialectGitHub);
+    applyMdSpacing(doc);
+    QString html = doc.toHtml();
+    // Qt hardcode body { color:#000000; ... } -> couleur du theme.
+    html.replace(QRegularExpression(QStringLiteral("color:#000000;")),
+                 QStringLiteral("color:%1;").arg(QString::fromLatin1(kMdTextColor)));
+    html.replace(QRegularExpression(QStringLiteral("color:#000000 ")),
+                 QStringLiteral("color:%1 ").arg(QString::fromLatin1(kMdTextColor)));
+    // Injecte le CSS visuel avant la fin du bloc <style>.
+    html.replace(QStringLiteral("</style>"), kMdCss + QStringLiteral("</style>"));
+    return html;
+}
+
+// Mesure le rendu Markdown a une largeur de wrap donnee.
+// NB : QLabel utilise documentMargin=0 en interne pour son QTextDocument,
+// donc on met aussi 0 ici pour que la largeur mesuree colle au rendu reel
+// (sinon idealWidth contient 8px de marge -> bulle trop large -> padding
+// gauche plus grand que droite a cause de l'alignement droite).
+static QSize measureMarkdown(const QString &md, int textW, const QFont &font)
+{
+    QTextDocument doc;
+    doc.setDefaultFont(font);
+    doc.setDocumentMargin(0);
+    doc.setMarkdown(md, QTextDocument::MarkdownDialectGitHub);
+    applyMdSpacing(doc);
+    const qreal idealW = doc.idealWidth();
+    const qreal w = qMin(idealW, qreal(textW));
+    doc.setTextWidth(w);
+    return QSize(int(std::ceil(w)), int(std::ceil(doc.size().height())));
+}
 
 static const char *kContentStyle =
     "QLabel#content-label {"
@@ -20,6 +111,9 @@ static const char *kContentStyle =
 // Flags communs pour rendre un QLabel sélectionnable au clavier et à la souris.
 static constexpr Qt::TextInteractionFlags kSelectFlags =
     Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard;
+// Idem + liens cliquables (ouvrent le navigateur via setOpenExternalLinks).
+static constexpr Qt::TextInteractionFlags kLinkFlags =
+    kSelectFlags | Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard;
 
 // --- ShimmerButton : QPushButton dont le texte a un dégradé animé ---
 // Une vague lumineuse fine traverse le texte de gauche à droite en continu.
@@ -107,23 +201,19 @@ void Bubble::fitToContent(int maxBubbleWidth)
     if (!m_contentLabel || m_role != Role::User) return;
 
     // Marges internes : layout (16+16 H, 12+12 V) uniquement.
-    // kGlassInset n'affecte que le paintEvent de la carte, pas le label.
     const int hPad = 16 + 16; // 32
     const int vPad = 12 + 12; // 24
     const int maxTextW = maxBubbleWidth - hPad;
     if (maxTextW <= 0) return;
 
-    // Police identique au stylesheet (font-size: 13px)
     QFont f = m_contentLabel->font();
     f.setPixelSize(13);
-    QFontMetrics fm(f);
 
-    // Mesure le texte avec word-wrap à la largeur max
-    QRect br = fm.boundingRect(QRect(0, 0, maxTextW, 99999),
-                               Qt::TextWordWrap, m_contentLabel->text());
+    // Mesure via QTextDocument (rendu Markdown) pour coller au rendu reel.
+    const QSize sz = measureMarkdown(m_content, maxTextW, f);
 
-    int bubbleW = qMin(br.width() + hPad, maxBubbleWidth);
-    int bubbleH = br.height() + vPad;
+    int bubbleW = qMin(sz.width() + hPad, maxBubbleWidth);
+    int bubbleH = sz.height() + vPad;
 
     setFixedSize(bubbleW, bubbleH);
 }
@@ -160,9 +250,10 @@ void Bubble::buildUser()
     m_contentLabel->setObjectName("content-label");
     m_contentLabel->setStyleSheet(kContentStyle);
     m_contentLabel->setWordWrap(true);
-    m_contentLabel->setTextFormat(Qt::PlainText);
-    m_contentLabel->setTextInteractionFlags(kSelectFlags);
-    m_contentLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_contentLabel->setTextFormat(Qt::RichText);
+    m_contentLabel->setTextInteractionFlags(kLinkFlags);
+    m_contentLabel->setOpenExternalLinks(true);
+    m_contentLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     layout->addWidget(m_contentLabel);
 }
 
@@ -198,18 +289,20 @@ void Bubble::buildAssistant()
     m_thinkingLabel->setObjectName("thinking-label");
     m_thinkingLabel->setStyleSheet(kContentStyle);
     m_thinkingLabel->setWordWrap(true);
-    m_thinkingLabel->setTextFormat(Qt::PlainText);
-    m_thinkingLabel->setTextInteractionFlags(kSelectFlags);
-    m_thinkingLabel->setVisible(false); // clos par défaut
+    m_thinkingLabel->setTextFormat(Qt::RichText);
+    m_thinkingLabel->setOpenExternalLinks(true);
+    m_thinkingLabel->setTextInteractionFlags(kLinkFlags);
+    m_thinkingLabel->setVisible(false); // clos par defaut
     layout->addWidget(m_thinkingLabel);
 
-    // Contenu de la réponse finale.
+    // Contenu de la reponse finale (rendu Markdown).
     m_contentLabel = new QLabel(this);
     m_contentLabel->setObjectName("content-label");
     m_contentLabel->setStyleSheet(kContentStyle);
     m_contentLabel->setWordWrap(true);
-    m_contentLabel->setTextFormat(Qt::PlainText);
-    m_contentLabel->setTextInteractionFlags(kSelectFlags);
+    m_contentLabel->setTextFormat(Qt::RichText);
+    m_contentLabel->setTextInteractionFlags(kLinkFlags);
+    m_contentLabel->setOpenExternalLinks(true);
     m_contentLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     layout->addWidget(m_contentLabel);
 
@@ -219,14 +312,16 @@ void Bubble::buildAssistant()
 void Bubble::refreshThinkingLabel()
 {
     if (!m_thinkingLabel) return;
-    // PlainText : pas d'escaping HTML, les \n sont affichés directement.
-    m_thinkingLabel->setText(m_thinking);
+    // Rendu Markdown (meme moteur que le contenu) -> coherent avec l'usage IA.
+    m_thinkingLabel->setText(renderMarkdown(m_thinking));
 }
 
 void Bubble::refreshContentLabel()
 {
     if (!m_contentLabel) return;
-    m_contentLabel->setText(m_content);
+    // Rendu Markdown -> HTML. Re-parse a chaque chunk (streaming) : acceptable
+    // pour un chat, et garantit la coherence avec la mesure fitToContent.
+    m_contentLabel->setText(renderMarkdown(m_content));
     m_contentLabel->setVisible(!m_content.isEmpty());
 }
 
