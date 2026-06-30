@@ -37,6 +37,18 @@ void LlamaClient::setConfig(const Config &config)
 void LlamaClient::setTools(const QJsonArray &tools)
 {
     m_tools = tools;
+    // Construit l'ensemble des noms de tools connus : sert de filtre
+    // anti-faux-positif dans extractInlineToolCalls (item 10). Un bloc
+    // {"name":...,"arguments":...} inline dont le name n'est pas un tool
+    // réel est traité comme de la prose et n'est pas extrait.
+    m_knownToolNames.clear();
+    for (const QJsonValue &entry : tools) {
+        const QJsonObject fn = entry.toObject()
+            .value(QStringLiteral("function")).toObject();
+        const QString name = fn.value(QStringLiteral("name")).toString();
+        if (!name.isEmpty())
+            m_knownToolNames.insert(name);
+    }
 }
 
 void LlamaClient::sendMessages(const QList<ChatMessage> &messages)
@@ -510,6 +522,16 @@ QList<ToolCall> LlamaClient::extractInlineToolCalls(QString &text) const
         ToolCall tc;
         tc.id = QStringLiteral("inline_%1").arg(calls.size());
         tc.name = obj.value(QStringLiteral("name")).toString();
+
+        // Filtre anti-faux-positif (item 10) : si le name extrait n'est pas un
+        // tool réel, on considère que c'est de la prose (métaphore, exemple,
+        // JSON quelconque) et on NE l'extrait pas. On ne retire pas non plus le
+        // bloc du texte — c'est du contenu légitime.
+        if (!m_knownToolNames.contains(tc.name)) {
+            searchFrom = idx + 1;
+            continue;
+        }
+
         const QJsonValue args = obj.value(QStringLiteral("arguments"));
         if (args.isObject()) {
             tc.arguments = QString::fromUtf8(

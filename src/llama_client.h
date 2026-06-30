@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QByteArray>
+#include <QSet>
 #include "Config.h"
 
 class ChatMessage;
@@ -98,4 +99,10 @@ private:
     // Accumulation du content pendant le stream (pour détecter les tool_calls
     // inline que certains modèles émettent dans leur réponse texte).
     QString m_streamedContent;
+
+    // Noms de tools connus (rempli dans setTools). Sert à filtrer les faux
+    // positifs d'extraction inline : un bloc {"name":...,"arguments":...}
+    // dont le name n'est pas un tool réel est traité comme de la prose et
+    // n'est PAS extrait. Voir ROADMAP item 10.
+    QSet<QString> m_knownToolNames;
 };
