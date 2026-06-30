@@ -1,5 +1,7 @@
 #include "ToolRegistry.h"
 #include "Tool.h"
+#include <QTimer>
+#include <memory>
 
 ToolRegistry::ToolRegistry(QObject *parent) : QObject(parent) {}
 
@@ -45,5 +47,28 @@ void ToolRegistry::execute(const QString &name, const QJsonObject &args,
         cb(false, QStringLiteral("Unknown tool: %1").arg(name));
         return;
     }
-    t->execute(args, cb);
+
+    // Guard : garantit que cb est invoquée exactement une fois, même si le tool
+    // oublie son callback (process bloqué, bug, double-appel…). Sans ça, un
+    // tool qui oublie cb fige silencieusement la boucle agentique.
+    auto called = std::make_shared<bool>(false);
+    auto guard = [cb, called](bool ok, QString result) {
+        if (*called) return;
+        *called = true;
+        cb(ok, std::move(result));
+    };
+
+    // Filet de sécurité : si le tool n'a pas rappelé cb après 130s, on déclenche
+    // une erreur pour ne pas rester bloqué indéfiniment.
+    QTimer::singleShot(130000, this, [called, guard]() {
+        if (*called) return;
+        *called = true;
+        guard(false, QStringLiteral("tool timed out (no callback after 130s)"));
+    });
+
+    try {
+        t->execute(args, guard);
+    } catch (...) {
+        guard(false, QStringLiteral("tool crashed (exception in execute)"));
+    }
 }
