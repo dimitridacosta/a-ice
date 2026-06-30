@@ -49,6 +49,12 @@ public:
         bool stream = false;
     };
 
+    struct Tools {
+        bool enabled = false;
+        QString braveApiKey;   // clé API Brave Search
+        QString terminalWorkdir; // home par défaut
+    };
+
     Config();
 
     /// Chemin du fichier de config effectivement utilisé.
@@ -59,6 +65,7 @@ public:
 
     const Provider &provider() const { return m_provider; }
     const Model &model() const { return m_model; }
+    const Tools &tools() const { return m_tools; }
 
     /// Prompt système lu depuis SOUL.md (vide si absent).
     QString systemPrompt() const { return m_systemPrompt; }
@@ -86,4 +93,5 @@ private:
     QString m_systemPrompt;
     Provider m_provider;
     Model m_model;
+    Tools m_tools;
 };

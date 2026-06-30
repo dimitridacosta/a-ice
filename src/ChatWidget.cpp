@@ -3,6 +3,11 @@
 #include "Glass.h"
 #include "llama_client.h"
 #include "Config.h"
+#include "ToolRegistry.h"
+#include "Tool.h"
+#include "tools/TerminalTool.h"
+#include "tools/BraveSearchTool.h"
+#include "tools/WebFetchTool.h"
 #include <KWindowEffects>
 #include <QPainterPath>
 #include <QPainter>
@@ -93,6 +98,10 @@ void ChatWidget::setupUI()
             this, &ChatWidget::onContentChunk);
     connect(m_client.data(), &LlamaClient::responseComplete,
             this, &ChatWidget::onResponseComplete);
+    connect(m_client.data(), &LlamaClient::toolCallsReady,
+            this, &ChatWidget::onToolCallsReady);
+    connect(m_client.data(), &LlamaClient::thinkingUpdated,
+            this, &ChatWidget::onThinkingUpdated);
     connect(m_client.data(), &LlamaClient::requestError,
             this, &ChatWidget::onRequestError);
 
@@ -341,6 +350,22 @@ void ChatWidget::setServerUrl(const QString &url)
 void ChatWidget::applyConfig(const Config &config)
 {
     m_client->setConfig(config);
+    setupTools(config);
+}
+
+void ChatWidget::setupTools(const Config &config)
+{
+    if (!config.tools().enabled) {
+        m_registry.reset();
+        m_client->setTools({});
+        return;
+    }
+    m_registry.reset(new ToolRegistry(this));
+    m_registry->add(new TerminalTool(config.tools().terminalWorkdir, this));
+    m_registry->add(new BraveSearchTool(config.tools().braveApiKey, this));
+    m_registry->add(new WebFetchTool(this));
+    m_client->setTools(m_registry->toJsonArray());
+    qInfo() << "[a-ice] tools registered:" << m_registry->toJsonArray().size();
 }
 
 void ChatWidget::onSendClicked()
@@ -398,6 +423,7 @@ void ChatWidget::onSendMessage(const QString &text)
 
     // Prépare la bulle assistant (gauche, réflexion en direct).
     m_isTyping = true;
+    m_toolIterations = 0;
     setGenerating(true);
     startAssistantBubble();
 
@@ -420,6 +446,17 @@ void ChatWidget::onThinkingChunk(const QString &text)
 {
     if (m_currentBubble) {
         m_currentBubble->appendThinking(text);
+    }
+    scrollToBottom();
+    scheduleBlurUpdate();
+}
+
+void ChatWidget::onThinkingUpdated(const QString &cleanedThinking)
+{
+    // Remplace tout le thinking affiché par la version nettoyée (sans les
+    // blocs tool_calls inline que le modèle a écrit en réfléchissant).
+    if (m_currentBubble) {
+        m_currentBubble->setThinking(cleanedThinking);
     }
     scrollToBottom();
     scheduleBlurUpdate();
@@ -454,6 +491,87 @@ void ChatWidget::onResponseComplete()
 
     emit messageReceived(assistantMsg.content);
     scheduleBlurUpdate();
+}
+
+void ChatWidget::onToolCallsReady(const QList<ToolCall> &calls, const QString &assistantContent)
+{
+    // Limite anti-boucle : on tolère 8 tours de tools par message utilisateur.
+    if (++m_toolIterations > 8) {
+        onRequestError(QStringLiteral("Too many tool iterations (limit 8)."));
+        return;
+    }
+
+    // 1. Enregistre le message assistant (avec tool_calls) dans l'historique.
+    ChatMessage asstMsg;
+    asstMsg.role = QStringLiteral("assistant");
+    asstMsg.content = assistantContent;
+    asstMsg.toolCalls = calls;
+    m_messages.append(asstMsg);
+
+    // Met à jour la bulle avec le content nettoyé (sans les blocs tool_calls
+    // qui ont été streamés puis extraits par LlamaClient).
+    if (m_currentBubble) {
+        m_currentContent = assistantContent;
+        m_currentBubble->setContent(assistantContent);
+        if (m_currentBubble->thinkingExpanded())
+            m_currentBubble->collapseThinking();
+    }
+
+    // 2. Lance l'exécution séquentielle des tools.
+    if (!m_registry) {
+        onRequestError(QStringLiteral("Tool call received but tools are disabled."));
+        return;
+    }
+    executeToolCalls(calls, 0);
+}
+
+void ChatWidget::executeToolCalls(const QList<ToolCall> &calls, int index)
+{
+    if (index >= calls.size()) {
+        // Tous les tools ont répondu : on relance le modèle avec l'historique
+        // mis à jour (incluant les messages role="tool").
+        m_client->sendMessages(m_messages);
+        return;
+    }
+
+    const ToolCall &tc = calls.at(index);
+    const QJsonObject args = tc.parsedArgs();
+
+    // Feedback visuel dans la thinking de la bulle en cours.
+    if (m_currentBubble) {
+        QString preview = tc.arguments;
+        if (preview.size() > 120) preview = preview.left(120) + QStringLiteral("…");
+        m_currentBubble->appendThinking(
+            QStringLiteral("\n🔧 **") + tc.name + QStringLiteral("** ") + preview + QStringLiteral("\n"));
+    }
+    scrollToBottom();
+    scheduleBlurUpdate();
+
+    m_registry->execute(tc.name, args, [this, calls, index](bool ok, QString result) {
+        // Tronque le preview affiché dans la thinking.
+        if (m_currentBubble) {
+            QString preview = result;
+            preview = preview.trimmed();
+            if (preview.size() > 400) preview = preview.left(400) + QStringLiteral("…");
+            const QString tag = ok ? QStringLiteral("✓") : QStringLiteral("⚠");
+            m_currentBubble->appendThinking(
+                tag + QStringLiteral(" ") + preview + QStringLiteral("\n\n"));
+        }
+
+        // Injecte le résultat dans l'historique (role="tool").
+        ChatMessage toolMsg;
+        toolMsg.role = QStringLiteral("tool");
+        toolMsg.toolCallId = calls.at(index).id;
+        toolMsg.toolName = calls.at(index).name;
+        toolMsg.content = result;
+        m_messages.append(toolMsg);
+
+        scrollToBottom();
+        scheduleBlurUpdate();
+
+        // Tool suivant (ou relance du client si dernier).
+        executeToolCalls(calls, index + 1);
+    });
 }
 
 void ChatWidget::onRequestError(const QString &error)

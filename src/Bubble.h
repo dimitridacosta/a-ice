@@ -32,6 +32,13 @@ public:
     void appendThinking(const QString &text);
     /// Ajoute un morceau de réponse finale.
     void appendContent(const QString &text);
+    /// Remplace tout le contenu de la réponse finale (utilisé après extraction
+    /// de tool_calls inline : le texte des tool_calls a été streamé puis doit
+    /// être retiré de la bulle).
+    void setContent(const QString &text);
+    /// Remplace tout le contenu de la thinking (après extraction de tool_calls
+    /// inline du reasoning : on nettoie le thinking affiché).
+    void setThinking(const QString &text);
     /// Réduit la zone réflexion (après l'arrivée du contenu).
     /// Le texte complet reste accessible par clic sur l'en-tête.
     void collapseThinking();

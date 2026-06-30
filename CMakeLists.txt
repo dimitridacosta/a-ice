@@ -21,6 +21,7 @@ add_executable(a-ice
     src/AiceApplet.h
     src/AiceApplet.cpp
     src/ChatMessage.h
+    src/ChatMessage.cpp
     src/ChatWidget.h
     src/ChatWidget.cpp
     src/Bubble.h
@@ -29,6 +30,15 @@ add_executable(a-ice
     src/llama_client.cpp
     src/Config.h
     src/Config.cpp
+    src/Tool.h
+    src/ToolRegistry.h
+    src/ToolRegistry.cpp
+    src/tools/TerminalTool.h
+    src/tools/TerminalTool.cpp
+    src/tools/BraveSearchTool.h
+    src/tools/BraveSearchTool.cpp
+    src/tools/WebFetchTool.h
+    src/tools/WebFetchTool.cpp
 )
 
 target_link_libraries(a-ice

@@ -128,7 +128,40 @@ $EDITOR ~/.config/a-ice/SOUL.md
 
 ## Roadmap
 
+- [x] Streaming mode (server-sent events)
+- [x] Markdown rendering (user / assistant / thinking)
+- [x] SOUL.md system prompt
+- [x] Function calling (tools) — terminal, brave_search, fetch_url
 - [ ] Configuration GUI (adresse serveur, température, tokens max)
 - [ ] Support multi-modèle
-- [ ] Icône personnalisée
+- [x] Icône personnalisée
 - [ ] Gestion du contexte (conversation longue)
+
+## Tools (function calling)
+
+A-Ice peut agir comme un agent : le modèle reçoit une liste d'outils
+(function-calling OpenAI-compatible) et peut les invoquer pendant sa
+réponse. Les résultats sont réinjectés en `role="tool"` et le modèle
+continue jusqu'à produire une réponse finale (max 8 itérations).
+
+Activation : `"tools": { "enabled": true }` dans `config.json`.
+
+### Outils fournis
+
+- **`terminal`** — exécute `bash -c <command>` dans le home de l'utilisateur
+  (ou `terminal_workdir` si défini). Timeout 30s par défaut (clamp 1s–120s).
+  Output combiné stdout+stderr tronqué à 20000 chars.
+- **`brave_search`** — recherche web via l'API Brave Search. Nécessite une
+  clé API : env var `BRAVE_API_KEY` (prioritaire) ou `tools.brave_api_key`
+  dans `config.json`. Retourne jusqu'à 20 résultats (title/url/snippet).
+- **`fetch_url`** — fetch une URL HTTP(S), convertit le HTML en markdown
+  via `QTextDocument` (zéro dépendance externe). Troncature 30000 chars.
+
+### Cycle function-calling
+
+```
+user → LLM → tool_calls → execute → role="tool" → LLM → réponse (ou re-tool)
+```
+
+Les appels sont affichés en direct dans la zone de réflexion (🔧 name(args)
+puis ✓ result-preview).

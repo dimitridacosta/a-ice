@@ -341,6 +341,21 @@ void Bubble::appendContent(const QString &text)
     emit geometryChanged();
 }
 
+void Bubble::setContent(const QString &text)
+{
+    m_content = text;
+    refreshContentLabel();
+    if (m_thinkingToggle) m_thinkingToggle->stopShimmer();
+    emit geometryChanged();
+}
+
+void Bubble::setThinking(const QString &text)
+{
+    m_thinking = text;
+    refreshThinkingLabel();
+    emit geometryChanged();
+}
+
 void Bubble::collapseThinking()
 {
     if (!m_thinkingLabel) return;

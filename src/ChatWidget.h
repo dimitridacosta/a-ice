@@ -14,6 +14,8 @@
 class Bubble;
 class LlamaClient;
 class Config;
+class ToolRegistry;
+struct ToolCall;
 
 /**
  * Overlay verre (glass) : pas de fenêtre classique.
@@ -57,6 +59,8 @@ private slots:
     void onContentChunk(const QString &text);
     void onResponseComplete();
     void onRequestError(const QString &error);
+    void onToolCallsReady(const QList<ToolCall> &calls, const QString &assistantContent);
+    void onThinkingUpdated(const QString &cleanedThinking);
 
 private:
     void setupUI();
@@ -64,6 +68,10 @@ private:
     void onSendMessage(const QString &text);
     void startAssistantBubble();
     void scrollToBottom();
+    /// Construit le ToolRegistry selon la config (si tools.enabled).
+    void setupTools(const Config &config);
+    /// Exécute séquentiellement une liste de tool_calls, puis relance le client.
+    void executeToolCalls(const QList<ToolCall> &calls, int index);
 
     /// Bascule le bouton entre “envoyer” et “stop” pendant la génération.
     void setGenerating(bool generating);
@@ -77,6 +85,7 @@ private:
     QRegion m_lastRegion;
 
     QScopedPointer<LlamaClient> m_client;
+    QScopedPointer<ToolRegistry> m_registry;
     QScrollArea *m_scrollArea = nullptr;
     QWidget    *m_messagesContainer = nullptr;
     QVBoxLayout *m_messagesLayout = nullptr;
@@ -92,5 +101,6 @@ private:
     QTimer m_blurTimer;
 
     bool m_isTyping = false;
+    int m_toolIterations = 0;
     QList<ChatMessage> m_messages;
 };
