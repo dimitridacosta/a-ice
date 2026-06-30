@@ -70,8 +70,14 @@ private:
     void scrollToBottom();
     /// Construit le ToolRegistry selon la config (si tools.enabled).
     void setupTools(const Config &config);
-    /// Exécute séquentiellement une liste de tool_calls, puis relance le client.
-    void executeToolCalls(const QList<ToolCall> &calls, int index);
+    /// Exécute séquentiellement une liste de tool_calls, avec validation
+    /// préalable (tool inconnu / JSON invalide / tronqué), puis relance le
+    /// client. Voir ROADMAP item 3.
+    void executeToolCallsValidated(const QList<ToolCall> &calls, int index);
+
+    /// Ajoute un message role="tool" à l'historique (résultat de tool).
+    /// Factorise l'injection des tool results (incl. cas d'erreur).
+    void appendToolResult(const ToolCall &tc, const QString &result);
 
     /// Bascule le bouton entre “envoyer” et “stop” pendant la génération.
     void setGenerating(bool generating);

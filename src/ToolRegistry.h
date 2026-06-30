@@ -28,6 +28,10 @@ public:
     /// true si au moins un tool est enregistré.
     bool isEmpty() const;
 
+    /// Liste comma-séparée des noms de tools enregistrés (pour les messages
+    /// d'erreur renvoyés au modèle quand il hallucine un nom inconnu).
+    QString availableNames() const;
+
     /// Trouve un tool par nom. nullptr si absent.
     Tool *find(const QString &name) const;
 

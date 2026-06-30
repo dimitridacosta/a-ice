@@ -495,13 +495,9 @@ void ChatWidget::onResponseComplete()
 
 void ChatWidget::onToolCallsReady(const QList<ToolCall> &calls, const QString &assistantContent)
 {
-    // Limite anti-boucle : on tolère 8 tours de tools par message utilisateur.
-    if (++m_toolIterations > 8) {
-        onRequestError(QStringLiteral("Too many tool iterations (limit 8)."));
-        return;
-    }
-
     // 1. Enregistre le message assistant (avec tool_calls) dans l'historique.
+    //    On le fait AVANT le check de limite : si on stoppe, l'historique doit
+    //    rester cohérent (assistant + tool_calls suivi de leurs réponses role="tool").
     ChatMessage asstMsg;
     asstMsg.role = QStringLiteral("assistant");
     asstMsg.content = assistantContent;
@@ -517,15 +513,43 @@ void ChatWidget::onToolCallsReady(const QList<ToolCall> &calls, const QString &a
             m_currentBubble->collapseThinking();
     }
 
-    // 2. Lance l'exécution séquentielle des tools.
+    // 2. Tools désactivés : on ne peut rien exécuter. On répond quand même
+    //    role="tool" à chaque tool_call (sinon l'API rejette le prochain send).
     if (!m_registry) {
+        for (const ToolCall &tc : calls)
+            appendToolResult(tc, QStringLiteral("Tools are disabled. Do NOT call tools."));
         onRequestError(QStringLiteral("Tool call received but tools are disabled."));
         return;
     }
-    executeToolCalls(calls, 0);
+
+    // 3. Limite anti-boucle : on tolère 8 tours de tools par message utilisateur.
+    if (++m_toolIterations > 8) {
+        // L'API OpenAI-compatible exige une réponse role="tool" pour chaque
+        // tool_call_id. On en injecte une "limit reached" par call avant de
+        // stopper, sinon le prochain sendMessages sera rejeté.
+        for (const ToolCall &tc : calls)
+            appendToolResult(tc, QStringLiteral("Tool iteration limit reached (8). Do NOT retry."));
+        if (m_currentBubble)
+            m_currentBubble->appendThinking(QStringLiteral("⚠ Tool iteration limit reached (8).\n\n"));
+        onRequestError(QStringLiteral("Too many tool iterations (limit 8)."));
+        return;
+    }
+
+    // 4. Lance l'exécution validée.
+    executeToolCallsValidated(calls, 0);
 }
 
-void ChatWidget::executeToolCalls(const QList<ToolCall> &calls, int index)
+void ChatWidget::appendToolResult(const ToolCall &tc, const QString &result)
+{
+    ChatMessage toolMsg;
+    toolMsg.role = QStringLiteral("tool");
+    toolMsg.toolCallId = tc.id;
+    toolMsg.toolName = tc.name;
+    toolMsg.content = result;
+    m_messages.append(toolMsg);
+}
+
+void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int index)
 {
     if (index >= calls.size()) {
         // Tous les tools ont répondu : on relance le modèle avec l'historique
@@ -535,6 +559,46 @@ void ChatWidget::executeToolCalls(const QList<ToolCall> &calls, int index)
     }
 
     const ToolCall &tc = calls.at(index);
+
+    // (a) Tool inconnu : on n'exécute pas, on répond au modèle avec la liste des
+    //     tools disponibles, puis on passe au tool_call suivant (ne pas stopper).
+    if (!m_registry->find(tc.name)) {
+        const QString msg = QStringLiteral(
+            "Unknown tool '%1'. Available tools: %2. Do NOT retry with this name.")
+            .arg(tc.name, m_registry->availableNames());
+        appendToolResult(tc, msg);
+        if (m_currentBubble)
+            m_currentBubble->appendThinking(QStringLiteral("⚠ ") + msg + QStringLiteral("\n\n"));
+        executeToolCallsValidated(calls, index + 1);
+        return;
+    }
+
+    // (b) Arguments invalides : args non vide mais non parsable en JSON.
+    if (!tc.arguments.isEmpty() && tc.parsedArgs().isEmpty()) {
+        const bool truncated = !(tc.arguments.endsWith(QLatin1Char('}'))
+                                 || tc.arguments.endsWith(QLatin1Char(']')));
+        if (truncated) {
+            // Tronqué → on arrête tout (le modèle a buggé sur le streaming).
+            const QString msg = QStringLiteral(
+                "Arguments truncated (incomplete JSON): '%1'. Do NOT retry.")
+                .arg(tc.arguments);
+            appendToolResult(tc, msg);
+            onRequestError(msg);
+            return;
+        }
+        // JSON invalide mais complet → on demande au modèle de réessayer.
+        const QString msg = QStringLiteral(
+            "Invalid JSON arguments: '%1'. Provide valid JSON, then retry.")
+            .arg(tc.arguments);
+        appendToolResult(tc, msg);
+        if (m_currentBubble)
+            m_currentBubble->appendThinking(QStringLiteral("⚠ ") + msg + QStringLiteral("\n\n"));
+        executeToolCallsValidated(calls, index + 1);
+        return;
+    }
+
+    // (c) Cas nominal : exécution du tool via le registry (le guard item 2
+    //     garantit que le callback est invoqué exactement une fois).
     const QJsonObject args = tc.parsedArgs();
 
     // Feedback visuel dans la thinking de la bulle en cours.
@@ -550,27 +614,20 @@ void ChatWidget::executeToolCalls(const QList<ToolCall> &calls, int index)
     m_registry->execute(tc.name, args, [this, calls, index](bool ok, QString result) {
         // Tronque le preview affiché dans la thinking.
         if (m_currentBubble) {
-            QString preview = result;
-            preview = preview.trimmed();
+            QString preview = result.trimmed();
             if (preview.size() > 400) preview = preview.left(400) + QStringLiteral("…");
             const QString tag = ok ? QStringLiteral("✓") : QStringLiteral("⚠");
             m_currentBubble->appendThinking(
                 tag + QStringLiteral(" ") + preview + QStringLiteral("\n\n"));
         }
 
-        // Injecte le résultat dans l'historique (role="tool").
-        ChatMessage toolMsg;
-        toolMsg.role = QStringLiteral("tool");
-        toolMsg.toolCallId = calls.at(index).id;
-        toolMsg.toolName = calls.at(index).name;
-        toolMsg.content = result;
-        m_messages.append(toolMsg);
+        appendToolResult(calls.at(index), result);
 
         scrollToBottom();
         scheduleBlurUpdate();
 
         // Tool suivant (ou relance du client si dernier).
-        executeToolCalls(calls, index + 1);
+        executeToolCallsValidated(calls, index + 1);
     });
 }
 

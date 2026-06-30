@@ -2,6 +2,7 @@
 #include "Tool.h"
 #include <QTimer>
 #include <memory>
+#include <QStringList>
 
 ToolRegistry::ToolRegistry(QObject *parent) : QObject(parent) {}
 
@@ -30,6 +31,14 @@ QJsonArray ToolRegistry::toJsonArray() const
 }
 
 bool ToolRegistry::isEmpty() const { return m_tools.isEmpty(); }
+
+QString ToolRegistry::availableNames() const
+{
+    QStringList names;
+    for (Tool *t : m_tools)
+        names << t->spec().name;
+    return names.join(QStringLiteral(", "));
+}
 
 Tool *ToolRegistry::find(const QString &name) const
 {
