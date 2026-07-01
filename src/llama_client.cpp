@@ -494,6 +494,20 @@ static int findJsonObjectEnd(const QString &s, int start)
 
 QList<ToolCall> LlamaClient::extractInlineToolCalls(QString &text) const
 {
+    // Pré-nettoyage : le modèle peut émettre les tool_calls inline avec des
+    // balises XML autour du JSON (style OpenAI legacy ou imitation). On retire
+    // ces balises + l'emoji "🔧" + whitespace adjacent AVANT l'extraction,
+    // sinon la balise fermante reste orpheline en début de message affiché.
+    // Balises construites via QChar/fromUtf8 pour ne pas figurer littéralement
+    // dans le source (l'éditeur de l'agent interprète les balises comme des
+    // appels d'outils).
+    static const QRegularExpression kToolTagRe(
+        QChar(0x3c) + QStringLiteral("/?tool_call") + QChar(0x3e),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QString kWrench = QString::fromUtf8("\xf0\x9f\x94\xa7");
+    text.remove(kToolTagRe);
+    text.remove(kWrench);
+
     QList<ToolCall> calls;
     int searchFrom = 0;
     while (true) {

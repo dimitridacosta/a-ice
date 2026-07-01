@@ -28,8 +28,11 @@ int main(int argc, char *argv[])
 
     // Filet de test terminal : A_ICE_TERMINAL_TEST=1 → aucune commande n'atteint bash.
     // Activé au lancement, non modifiable par le modèle depuis l'intérieur de l'app.
-    if (qEnvironmentVariableIsSet("A_ICE_TERMINAL_TEST")) {
-        TerminalTool::setTestMode(true);
+    // "0" ou vide = OFF, toute autre valeur = ON.
+    {
+        const QByteArray v = qgetenv("A_ICE_TERMINAL_TEST");
+        if (!v.isEmpty() && v != "0" && v != "false")
+            TerminalTool::setTestMode(true);
     }
 
     auto w = std::make_unique<AiceApplet>();
