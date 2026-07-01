@@ -11,6 +11,29 @@
 
 class QMouseEvent;
 class ShimmerButton;
+class WaitingBlock;
+
+/**
+ * Bloc d'attente : placeholder affiché dans la carte assistant entre le
+ * sendMessages et le premier chunk (thinking/content/tool). Même style
+ * visuel que ThinkingBlock (shimmer) + points animés qui défilent pour
+ * donner une vraie sensation d'activité (le PC infère). NON expandable.
+ * Retiré des qu'un vrai bloc arrive. Evite une carte vide/amateur.
+ */
+class WaitingBlock : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit WaitingBlock(QWidget *parent = nullptr);
+    void startShimmer();
+    void stopShimmer();
+signals:
+    void geometryChanged();
+private:
+    ShimmerButton *m_label;
+    QTimer *m_dotsTimer = nullptr;
+    int m_dots = 0;  // 0..3 : nombre de points affichés
+};
 
 /**
  * Bloc de réflexion (collapsible). Un par phase de thinking.
@@ -120,6 +143,8 @@ public:
     ThinkingBlock *addThinkingBlock();
     ToolBlock *addToolBlock(const QString &name);
     ContentBlock *addContentBlock();
+    /// Placeholder d'attente (avant le premier chunk). Non-expandable.
+    WaitingBlock *addWaitingBlock();
 
     Role role() const { return m_role; }
 

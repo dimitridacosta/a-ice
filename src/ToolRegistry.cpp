@@ -81,3 +81,9 @@ void ToolRegistry::execute(const QString &name, const QJsonObject &args,
         guard(false, QStringLiteral("tool crashed (exception in execute)"));
     }
 }
+
+void ToolRegistry::cancelAll()
+{
+    for (Tool *t : m_tools)
+        t->cancel();
+}

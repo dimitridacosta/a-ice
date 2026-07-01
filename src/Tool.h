@@ -37,4 +37,9 @@ public:
     ///              le modèle sache que ça a échoué)
     virtual void execute(const QJsonObject &args,
                          std::function<void(bool ok, QString result)> cb) = 0;
+
+    /// Interruption demandee par l'utilisateur (bouton Stop). Default no-op ;
+    /// un tool qui lance des ressources async (QProcess, reseau...) override
+    /// pour terminer ces ressources. Voir ROADMAP item 8.
+    virtual void cancel() {}
 };

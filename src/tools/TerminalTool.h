@@ -3,6 +3,9 @@
 #include "../Tool.h"
 #include <QString>
 #include <QDir>
+#include <QList>
+
+class QProcess;
 
 class TerminalTool : public Tool
 {
@@ -16,6 +19,8 @@ public:
     Spec spec() const override;
     void execute(const QJsonObject &args,
                  std::function<void(bool ok, QString result)> cb) override;
+    /// Interruption : termine tous les QProcess actifs. Voir ROADMAP item 8.
+    void cancel() override;
 
     // Mode "circuit ouvert" : ACTIF au demarrage. Toute commande recue est
     // interceptee et renvoie un message sterile — bash n'est jamais lance.
@@ -27,5 +32,6 @@ public:
 
 private:
     QString m_workdir;
+    QList<QProcess*> m_activeProcs;  // QProcess en cours (pour cancel())
     static bool s_testMode;
 };

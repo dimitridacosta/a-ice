@@ -308,6 +308,61 @@ ContentBlock *Bubble::addContentBlock()
     return b;
 }
 
+WaitingBlock *Bubble::addWaitingBlock()
+{
+    auto *b = new WaitingBlock(this);
+    connect(b, &WaitingBlock::geometryChanged, this, &Bubble::geometryChanged);
+    m_layout->addWidget(b);
+    b->show();
+    emit geometryChanged();
+    return b;
+}
+
+// --- WaitingBlock ---
+WaitingBlock::WaitingBlock(QWidget *parent)
+    : QWidget(parent)
+{
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    m_label = new ShimmerButton(QStringLiteral("Reading"), this);
+    m_label->setObjectName("waiting-toggle");
+    m_label->setFlat(true);
+    m_label->setEnabled(false);  // non-cliquable (pas un toggle)
+    m_label->setCursor(Qt::ArrowCursor);
+    m_label->setStyleSheet(
+        "QPushButton#waiting-toggle {"
+        "  background: transparent; border: none;"
+        "  color: rgba(239,240,241,200);"
+        "  font-size: 11px; font-style: italic;"
+        "  padding: 2px 4px; text-align: left;"
+        "}");
+    m_label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    layout->addWidget(m_label);
+
+    // Points animés qui défilent (0→1→2→3→0) ~3fps : donne une vraie
+    // sensation d'activité pendant que le LLM infère.
+    m_dotsTimer = new QTimer(this);
+    m_dotsTimer->setInterval(350);
+    connect(m_dotsTimer, &QTimer::timeout, this, [this]() {
+        m_dots = (m_dots + 1) % 4;
+        QString dots;
+        dots.fill(QChar(u'.'), m_dots);
+        m_label->setText(QStringLiteral("Reading") + dots);
+    });
+    m_dotsTimer->start();
+
+    startShimmer();
+}
+
+void WaitingBlock::startShimmer() { m_label->startShimmer(); }
+void WaitingBlock::stopShimmer()
+{
+    m_label->stopShimmer();
+    if (m_dotsTimer) m_dotsTimer->stop();
+}
+
 // --- ThinkingBlock ---
 ThinkingBlock::ThinkingBlock(QWidget *parent)
     : QWidget(parent)

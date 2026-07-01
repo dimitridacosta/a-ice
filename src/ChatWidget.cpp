@@ -379,13 +379,39 @@ void ChatWidget::onSendClicked()
 
 void ChatWidget::onStopClicked()
 {
-    // Interrompt la requête en cours. La bulle en cours reste affichée telle
-    // quelle (réflexion + contenu partiels), et on l'enregistre dans
-    // l'historique pour le tour suivant.
+    // Interrompt la requête ET l'execution d'un tool en cours. La bulle reste
+    // affichee telle quelle (reflexion + contenu partiels), et on l'enregistre
+    // dans l'historique pour le tour suivant. Voir ROADMAP item 8.
+    m_interruptRequested = true;
     m_client->cancel();
+    if (m_registry)
+        m_registry->cancelAll();
+
+    // Si un tool est en cours, on injecte immediatement une reponse role="tool"
+    // "cancelled" pour que l'historique reste coherent (sinon l'API rejette au
+    // prochain sendMessages : tool_call sans reponse). Le callback du tool, quand
+    // il arrivera, verra m_interruptRequested et ne re-appendera pas.
+    if (m_toolCallInProgressActive) {
+        const QString msg = QStringLiteral("[a-ice] cancelled by user");
+        ChatMessage toolMsg;
+        toolMsg.role = QStringLiteral("tool");
+        toolMsg.toolCallId = m_toolCallInProgressId;
+        toolMsg.toolName = m_toolCallInProgressName;
+        toolMsg.content = sanitizeToolResult(msg);
+        m_messages.append(toolMsg);
+        if (m_activeTool)
+            m_activeTool->setResult(msg, false);
+        m_activeTool = nullptr;
+        m_toolCallInProgressActive = false;
+        m_toolCallInProgressId.clear();
+        m_toolCallInProgressName.clear();
+    }
+
     m_isTyping = false;
 
     if (m_currentBubble) {
+        // Retire le placeholder d'attente si jamais aucun chunk n'est arrivé.
+        clearWaitingBlock();
         // Ferme la réflexion en cours (si ouverte) avant de figer la carte.
         if (m_activeThinking) m_activeThinking->collapse();
         ChatMessage assistantMsg;
@@ -430,6 +456,7 @@ void ChatWidget::onSendMessage(const QString &text)
     // Prépare la bulle assistant (gauche, réflexion en direct).
     m_isTyping = true;
     m_toolIterations = 0;
+    m_interruptRequested = false;
     setGenerating(true);
     startAssistantBubble();
 
@@ -449,6 +476,21 @@ void ChatWidget::startAssistantBubble()
             this, &ChatWidget::scheduleBlurUpdate);
     m_messagesLayout->addWidget(m_currentBubble);
     m_currentBubble->show();
+    // Placeholder d'attente : évite une carte vide (amateur) entre le
+    // sendMessages et le premier chunk. Retiré dès qu'un vrai bloc arrive.
+    m_waitingBlock = m_currentBubble->addWaitingBlock();
+    scrollToBottom();
+    scheduleBlurUpdate();
+}
+
+void ChatWidget::clearWaitingBlock()
+{
+    if (!m_waitingBlock)
+        return;
+    m_waitingBlock->stopShimmer();
+    m_waitingBlock->deleteLater();
+    m_waitingBlock = nullptr;
+    scheduleBlurUpdate();
 }
 
 void ChatWidget::onThinkingChunk(const QString &text)
@@ -458,6 +500,7 @@ void ChatWidget::onThinkingChunk(const QString &text)
     // en crée un. Voir ROADMAP item 6 (révisé : une carte + blocs empilés).
     if (!m_currentBubble)
         startAssistantBubble();
+    clearWaitingBlock();
     if (!m_activeThinking)
         m_activeThinking = m_currentBubble->addThinkingBlock();
     m_activeThinking->append(text);
@@ -479,6 +522,7 @@ void ChatWidget::onContentChunk(const QString &text)
 {
     if (!m_currentBubble)
         startAssistantBubble();
+    clearWaitingBlock();
     // Nouveau bloc content (nouveau tour) → on reset l'accumulation API.
     if (!m_activeContent) {
         m_currentContent.clear();
@@ -506,7 +550,9 @@ void ChatWidget::onResponseComplete()
     m_activeThinking = nullptr;
     m_activeContent  = nullptr;
     m_activeTool     = nullptr;
+    m_waitingBlock   = nullptr;
     m_currentContent.clear();
+    m_interruptRequested = false;
 
     emit messageReceived(assistantMsg.content);
     scheduleBlurUpdate();
@@ -514,6 +560,7 @@ void ChatWidget::onResponseComplete()
 
 void ChatWidget::onToolCallsReady(const QList<ToolCall> &calls, const QString &assistantContent)
 {
+    clearWaitingBlock();
     // 1. Enregistre le message assistant (avec tool_calls) dans l'historique.
     //    On le fait AVANT le check de limite : si on stoppe, l'historique doit
     //    rester cohérent (assistant + tool_calls suivi de leurs réponses role="tool").
@@ -575,6 +622,9 @@ void ChatWidget::appendToolResult(const ToolCall &tc, const QString &result)
 
 void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int index)
 {
+    if (m_interruptRequested)
+        return;  // Stop demande : on ne lance plus rien.
+
     if (index >= calls.size()) {
         // Tous les tools ont répondu : on relance le modèle avec l'historique
         // mis à jour (incluant les messages role="tool"). La carte reste la
@@ -711,12 +761,41 @@ void ChatWidget::executeToolCallNow(const QList<ToolCall> &calls, int index)
     scrollToBottom();
     scheduleBlurUpdate();
 
+    // Tracker : si l'utilisateur appuie sur Stop pendant l'exec, onStopClicked
+    // utilise ces infos pour injecter un role="tool" "cancelled" coherent.
+    m_toolCallInProgressId = tc.id;
+    m_toolCallInProgressName = tc.name;
+    m_toolCallInProgressActive = true;
+
     m_registry->execute(tc.name, args, [this, calls, index](bool ok, QString result) {
+        // Stop demande pendant l'exec : onStopClicked a deja injecte le
+        // role="tool" "cancelled" (si m_toolCallInProgressActive etait true).
+        // On finalise juste le visuel si ce n'etait pas deja fait, et on
+        // n'enchaîne SURTOUT pas sur le tool suivant.
+        if (m_interruptRequested) {
+            if (m_toolCallInProgressActive) {
+                // Le tool n'avait pas encore repond quand Stop a ete clique,
+                // mais onStopClicked n'a pas injecte (race rare) — on le fait
+                // ici pour rester coherent.
+                if (m_activeTool)
+                    m_activeTool->setResult(result, ok);
+                appendToolResult(calls.at(index), result);
+                m_activeTool = nullptr;
+                m_toolCallInProgressActive = false;
+                m_toolCallInProgressId.clear();
+                m_toolCallInProgressName.clear();
+            }
+            return;
+        }
+
         if (m_activeTool)
             m_activeTool->setResult(result, ok);
 
         appendToolResult(calls.at(index), result);
         m_activeTool = nullptr;
+        m_toolCallInProgressActive = false;
+        m_toolCallInProgressId.clear();
+        m_toolCallInProgressName.clear();
 
         scrollToBottom();
         scheduleBlurUpdate();
@@ -731,10 +810,11 @@ void ChatWidget::onRequestError(const QString &error)
     qWarning() << "[a-ice] UI error:" << error;
     if (!m_currentBubble)
         startAssistantBubble();
+    clearWaitingBlock();
     if (m_activeThinking) m_activeThinking->collapse();
     if (m_currentBubble) {
         auto *cb = m_currentBubble->addContentBlock();
-        cb->set(QStringLiteral("⚠️ ") + error);
+        cb->set(QStringLiteral("\u26a0\ufe0f ") + error);
     }
     m_isTyping = false;
     setGenerating(false);
@@ -742,6 +822,8 @@ void ChatWidget::onRequestError(const QString &error)
     m_activeThinking = nullptr;
     m_activeContent  = nullptr;
     m_activeTool     = nullptr;
+    m_waitingBlock   = nullptr;
+    m_interruptRequested = false;
     scheduleBlurUpdate();
 }
 

@@ -3,6 +3,7 @@
 
 #include <QDir>
 #include <QProcess>
+#include <QTimer>
 #include <QJsonArray>
 #include <algorithm>
 #include <memory>
@@ -67,56 +68,82 @@ void TerminalTool::execute(const QJsonObject &args,
     int timeoutMs = args.value(QStringLiteral("timeout_ms")).toInt(30000);
     timeoutMs = std::clamp(timeoutMs, 1000, 120000);
 
+    // Execution asynchrone : on ne bloque PAS l'event loop (waitForFinished
+    // gelait l'UI et empechait le bouton Stop de fonctionner pendant une
+    // commande). Le timeout est gere via QTimer, et cancel() peut tuer le
+    // QProcess depuis l'exterieur. Voir ROADMAP item 8.
     auto *proc = new QProcess(this);
     proc->setWorkingDirectory(m_workdir);
     proc->setProcessChannelMode(QProcess::MergedChannels);
+    m_activeProcs.append(proc);
+
+    auto *timeoutTimer = new QTimer(this);
+    timeoutTimer->setSingleShot(true);
 
     auto done = std::make_shared<bool>(false);
+
     QObject::connect(proc, &QProcess::finished, this,
-        [cb, proc, done](int, QProcess::ExitStatus) {
+        [this, cb, proc, done, timeoutTimer, timeoutMs](int, QProcess::ExitStatus) {
             if (*done) return;
             *done = true;
+            timeoutTimer->stop();
+            timeoutTimer->deleteLater();
+            m_activeProcs.removeAll(proc);
             QString out = QString::fromUtf8(proc->readAllStandardOutput());
             if (out.size() > 20000) {
                 out = QStringLiteral("[output truncated]\n") + out.right(20000);
             }
+            const bool cancelled = proc->property("aice_cancel").toBool();
+            const bool timedOut = proc->property("aice_timeout").toBool();
             proc->deleteLater();
-            cb(true, out);
+            if (cancelled)
+                cb(false, QStringLiteral("[a-ice] terminal: cancelled by user"));
+            else if (timedOut)
+                cb(false, QStringLiteral("[a-ice] terminal: Timeout after %1ms\n%2")
+                               .arg(timeoutMs)
+                               .arg(out));
+            else
+                cb(true, out);
         });
 
     QObject::connect(proc, &QProcess::errorOccurred, this,
-        [cb, proc, done](QProcess::ProcessError err) {
-            if (*done || err == QProcess::Timedout)
-                return;
+        [this, cb, proc, done, timeoutTimer](QProcess::ProcessError) {
+            if (*done) return;
             *done = true;
-            QString msg = QStringLiteral("[a-ice] terminal: process error: ")
-                          + proc->errorString();
+            timeoutTimer->stop();
+            timeoutTimer->deleteLater();
+            m_activeProcs.removeAll(proc);
+            const QString msg = QStringLiteral("[a-ice] terminal: process error: %1")
+                                .arg(proc->errorString());
             proc->deleteLater();
             cb(false, msg);
         });
 
-    proc->start(QStringLiteral("bash"), QStringList{QStringLiteral("-c"), command});
-
-    if (!proc->waitForStarted(2000)) {
-        if (*done) return;
-        *done = true;
-        QString msg = QStringLiteral("[a-ice] terminal: failed to start: ")
-                      + proc->errorString();
-        proc->deleteLater();
-        cb(false, msg);
-        return;
-    }
-
-    if (!proc->waitForFinished(timeoutMs)) {
-        if (*done) return;
-        *done = true;
+    QObject::connect(timeoutTimer, &QTimer::timeout, this, [proc]() {
+        proc->setProperty("aice_timeout", true);
         proc->terminate();
-        if (!proc->waitForFinished(1000))
-            proc->kill();
-        QString out = QString::fromUtf8(proc->readAllStandardOutput());
-        proc->deleteLater();
-        cb(false, QStringLiteral("[a-ice] terminal: Timeout after %1ms\n%2")
-                       .arg(timeoutMs)
-                       .arg(out));
+        QTimer::singleShot(1000, proc, [proc]() {
+            if (proc->state() != QProcess::NotRunning)
+                proc->kill();
+        });
+    });
+
+    proc->start(QStringLiteral("bash"), QStringList{QStringLiteral("-c"), command});
+    timeoutTimer->start(timeoutMs);
+}
+
+void TerminalTool::cancel()
+{
+    // Termine proprement tous les QProcess actifs. Le finished handler
+    // detecte la property "aice_cancel" et renvoie un resultat "cancelled".
+    for (QProcess *p : m_activeProcs) {
+        if (p->state() != QProcess::NotRunning) {
+            p->setProperty("aice_cancel", true);
+            p->terminate();
+            QTimer::singleShot(1000, p, [p]() {
+                if (p->state() != QProcess::NotRunning)
+                    p->kill();
+            });
+        }
     }
 }

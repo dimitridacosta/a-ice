@@ -16,6 +16,7 @@ class Bubble;
 class ThinkingBlock;
 class ToolBlock;
 class ContentBlock;
+class WaitingBlock;
 class LlamaClient;
 class Config;
 class ToolRegistry;
@@ -91,6 +92,9 @@ private:
     /// Bascule le bouton entre “envoyer” et “stop” pendant la génération.
     void setGenerating(bool generating);
 
+    /// Retire le placeholder d'attente (des qu'un vrai bloc arrive).
+    void clearWaitingBlock();
+
     /// Recalcule et applique la region blur KWin (union bulles + barre).
     void updateBlurRegion();
     /// Re-planifie un recalcul de blur (throttled).
@@ -117,12 +121,17 @@ private:
     ThinkingBlock *m_activeThinking = nullptr;
     ContentBlock  *m_activeContent  = nullptr;
     ToolBlock     *m_activeTool     = nullptr;
+    WaitingBlock  *m_waitingBlock   = nullptr;  // placeholder avant 1er chunk
     QString m_currentContent; // contenu de la réponse en cours (pour l'historique API)
 
     QTimer m_blurTimer;
 
     bool m_isTyping = false;
     int m_toolIterations = 0;
+    bool m_interruptRequested = false;        // bouton Stop pendant exec tools
+    QString m_toolCallInProgressId;           // tool_call_id en cours (pour inject "cancelled")
+    QString m_toolCallInProgressName;
+    bool m_toolCallInProgressActive = false;
     QList<ChatMessage> m_messages;
     QSet<QString> m_sessionApprovedPatterns; // dangerous patterns approuvés pour la session
 };

@@ -40,6 +40,11 @@ public:
     void execute(const QString &name, const QJsonObject &args,
                  std::function<void(bool ok, QString result)> cb);
 
+    /// Interruption globale : appelle cancel() sur tous les tools registered.
+    /// Utilise par ChatWidget::onStopClicked pendant l'execution d'un tool.
+    /// Voir ROADMAP item 8.
+    void cancelAll();
+
 private:
     QList<Tool *> m_tools;
 };
