@@ -445,9 +445,13 @@ void ChatWidget::startAssistantBubble()
 
 void ChatWidget::onThinkingChunk(const QString &text)
 {
-    if (m_currentBubble) {
+    // Item 6 — bulles par tour : si la bulle courante a été détachée (fin du
+    // tour précédent après les tool calls), on en crée une nouvelle pour ce
+    // tour. Une bulle = un sendMessages.
+    if (!m_currentBubble)
+        startAssistantBubble();
+    if (m_currentBubble)
         m_currentBubble->appendThinking(text);
-    }
     scrollToBottom();
     scheduleBlurUpdate();
 }
@@ -465,6 +469,9 @@ void ChatWidget::onThinkingUpdated(const QString &cleanedThinking)
 
 void ChatWidget::onContentChunk(const QString &text)
 {
+    // Item 6 — nouveau tour → nouvelle bulle (voir onThinkingChunk).
+    if (!m_currentBubble)
+        startAssistantBubble();
     m_currentContent.append(text);
     if (m_currentBubble) {
         // Premier contenu → on réduit la réflexion (gardée re-dépliable).
@@ -553,8 +560,11 @@ void ChatWidget::appendToolResult(const ToolCall &tc, const QString &result)
 void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int index)
 {
     if (index >= calls.size()) {
-        // Tous les tools ont répondu : on relance le modèle avec l'historique
-        // mis à jour (incluant les messages role="tool").
+        // Tous les tools ont répondu : on détache la bulle du tour courant
+        // (elle reste affichée, avec sa réflexion + le feedback des outils).
+        // Le prochain sendMessages va streamer un nouveau tour → les chunks
+        // créeront une NOUVELLE bulle. Une bulle = un tour. Voir ROADMAP item 6.
+        m_currentBubble = nullptr;
         m_client->sendMessages(m_messages);
         return;
     }
@@ -653,6 +663,7 @@ void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int ind
 void ChatWidget::executeToolCallNow(const QList<ToolCall> &calls, int index)
 {
     if (index >= calls.size()) {
+        m_currentBubble = nullptr;
         m_client->sendMessages(m_messages);
         return;
     }
