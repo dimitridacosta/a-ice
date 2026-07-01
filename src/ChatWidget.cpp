@@ -374,7 +374,82 @@ void ChatWidget::onSendClicked()
     QString text = m_promptEdit->toPlainText().trimmed();
     if (text.isEmpty()) return;
     m_promptEdit->clear();
+
+    // Commandes slash : /new, /help, ... — interceptees avant l'envoi au LLM.
+    if (text.startsWith(QLatin1Char('/'))) {
+        if (handleSlashCommand(text))
+            return;  // commande consommee
+        // Commande inconnue : on tombe sur onSendMessage (le LLM peut repondre,
+        // ou pas — libre a l'utilisateur).
+    }
+
     onSendMessage(text);
+}
+
+bool ChatWidget::handleSlashCommand(const QString &text)
+{
+    const QString cmd = text.section(QLatin1Char(' '), 0, 0).toLower();
+    const QString arg = text.section(QLatin1Char(' '), 1);
+
+    if (cmd == QLatin1String("/new") || cmd == QLatin1String("/clear")) {
+        resetConversation();
+        return true;
+    }
+    if (cmd == QLatin1String("/help") || cmd == QLatin1String("/commands")) {
+        // Affiche l'aide dans une carte systeme (style erreur, mais informatif).
+        if (!m_currentBubble) startAssistantBubble();
+        clearWaitingBlock();
+        if (m_currentBubble) {
+            auto *cb = m_currentBubble->addContentBlock();
+            cb->set(QStringLiteral("Commandes disponibles :\n"
+                "- /new  (ou /clear) : reinitialise la conversation\n"
+                "- /help : affiche cette aide"));
+        }
+        m_currentBubble = nullptr;
+        m_activeThinking = nullptr;
+        m_activeContent  = nullptr;
+        m_activeTool     = nullptr;
+        m_waitingBlock   = nullptr;
+        scheduleBlurUpdate();
+        return true;
+    }
+    return false;  // commande inconnue
+}
+
+void ChatWidget::resetConversation()
+{
+    // Coupe tout ce qui pourrait tourner (generation, tools en cours).
+    m_interruptRequested = true;
+    m_client->cancel();
+    if (m_registry) m_registry->cancelAll();
+
+    // Retire toutes les bulles de la zone de messages.
+    QLayoutItem *item;
+    while ((item = m_messagesLayout->takeAt(0)) != nullptr) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+
+    // Reset l'etat API + UI.
+    m_messages.clear();
+    m_currentBubble = nullptr;
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
+    m_waitingBlock   = nullptr;
+    m_currentContent.clear();
+    m_toolIterations = 0;
+    m_interruptRequested = false;
+    m_toolCallInProgressActive = false;
+    m_toolCallInProgressId.clear();
+    m_toolCallInProgressName.clear();
+    m_sessionApprovedPatterns.clear();  // nouvelle conversation = nouveaux approvals
+    m_isTyping = false;
+    setGenerating(false);
+
+    scheduleBlurUpdate();
+    qInfo() << "[a-ice] conversation reinitialisee (/new)";
 }
 
 void ChatWidget::onStopClicked()

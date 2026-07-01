@@ -92,6 +92,14 @@ private:
     /// Bascule le bouton entre “envoyer” et “stop” pendant la génération.
     void setGenerating(bool generating);
 
+    /// Intercepte les commandes slash (/new, /help, ...). Retourne true si la
+    /// saisie etait une commande (consommee, non envoyee au LLM), false sinon.
+    bool handleSlashCommand(const QString &text);
+
+    /// Reinitialise la conversation : historique API, bulles, etat des blocs,
+    /// approvals session. Utilise par /new.
+    void resetConversation();
+
     /// Retire le placeholder d'attente (des qu'un vrai bloc arrive).
     void clearWaitingBlock();
 
