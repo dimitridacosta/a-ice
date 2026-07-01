@@ -386,12 +386,17 @@ void ChatWidget::onStopClicked()
     m_isTyping = false;
 
     if (m_currentBubble) {
+        // Ferme la réflexion en cours (si ouverte) avant de figer la carte.
+        if (m_activeThinking) m_activeThinking->collapse();
         ChatMessage assistantMsg;
         assistantMsg.role = "assistant";
         assistantMsg.content = m_currentContent;
         m_messages.append(assistantMsg);
         m_currentBubble = nullptr;
     }
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
     m_currentContent.clear();
     setGenerating(false);
     scheduleBlurUpdate();
@@ -436,6 +441,9 @@ void ChatWidget::onSendMessage(const QString &text)
 void ChatWidget::startAssistantBubble()
 {
     m_currentContent.clear();
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
     m_currentBubble = new Bubble(Bubble::Role::Assistant, this);
     connect(m_currentBubble, &Bubble::geometryChanged,
             this, &ChatWidget::scheduleBlurUpdate);
@@ -445,41 +453,41 @@ void ChatWidget::startAssistantBubble()
 
 void ChatWidget::onThinkingChunk(const QString &text)
 {
-    // Item 6 — bulles par tour : si la bulle courante a été détachée (fin du
-    // tour précédent après les tool calls), on en crée une nouvelle pour ce
-    // tour. Une bulle = un sendMessages.
+    // Une carte par réponse agent ; chaque phase de thinking = un nouveau bloc
+    // empilé dans la carte. Si pas de bloc thinking actif (nouveau tour), on
+    // en crée un. Voir ROADMAP item 6 (révisé : une carte + blocs empilés).
     if (!m_currentBubble)
         startAssistantBubble();
-    if (m_currentBubble)
-        m_currentBubble->appendThinking(text);
+    if (!m_activeThinking)
+        m_activeThinking = m_currentBubble->addThinkingBlock();
+    m_activeThinking->append(text);
     scrollToBottom();
     scheduleBlurUpdate();
 }
 
 void ChatWidget::onThinkingUpdated(const QString &cleanedThinking)
 {
-    // Remplace tout le thinking affiché par la version nettoyée (sans les
-    // blocs tool_calls inline que le modèle a écrit en réfléchissant).
-    if (m_currentBubble) {
-        m_currentBubble->setThinking(cleanedThinking);
-    }
+    // Remplace le thinking affiché par la version nettoyée (sans les blocs
+    // tool_calls inline que le modèle a écrit en réfléchissant).
+    if (m_activeThinking)
+        m_activeThinking->set(cleanedThinking);
     scrollToBottom();
     scheduleBlurUpdate();
 }
 
 void ChatWidget::onContentChunk(const QString &text)
 {
-    // Item 6 — nouveau tour → nouvelle bulle (voir onThinkingChunk).
     if (!m_currentBubble)
         startAssistantBubble();
-    m_currentContent.append(text);
-    if (m_currentBubble) {
-        // Premier contenu → on réduit la réflexion (gardée re-dépliable).
-        if (m_currentBubble->thinkingExpanded()) {
-            m_currentBubble->collapseThinking();
-        }
-        m_currentBubble->appendContent(text);
+    // Nouveau bloc content (nouveau tour) → on reset l'accumulation API.
+    if (!m_activeContent) {
+        m_currentContent.clear();
+        m_activeContent = m_currentBubble->addContentBlock();
+        // Premier contenu du tour → on réduit la réflexion (gardée dépliable).
+        if (m_activeThinking) m_activeThinking->collapse();
     }
+    m_currentContent.append(text);
+    m_activeContent->append(text);
     scrollToBottom();
     scheduleBlurUpdate();
 }
@@ -495,6 +503,9 @@ void ChatWidget::onResponseComplete()
     m_isTyping = false;
     setGenerating(false);
     m_currentBubble = nullptr;
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
     m_currentContent.clear();
 
     emit messageReceived(assistantMsg.content);
@@ -512,14 +523,17 @@ void ChatWidget::onToolCallsReady(const QList<ToolCall> &calls, const QString &a
     asstMsg.toolCalls = calls;
     m_messages.append(asstMsg);
 
-    // Met à jour la bulle avec le content nettoyé (sans les blocs tool_calls
-    // qui ont été streamés puis extraits par LlamaClient).
-    if (m_currentBubble) {
-        m_currentContent = assistantContent;
-        m_currentBubble->setContent(assistantContent);
-        if (m_currentBubble->thinkingExpanded())
-            m_currentBubble->collapseThinking();
-    }
+    // Finalise les blocs du tour courant : content nettoyé (sans les blocs
+    // tool_calls extraits par LlamaClient) + repli de la réflexion. On détache
+    // les blocs actifs : le prochain tour créera de nouveaux blocs dans la
+    // MÊME carte (une carte = toute la réponse agent).
+    m_currentContent = assistantContent;
+    if (m_activeContent)
+        m_activeContent->set(assistantContent);
+    if (m_activeThinking)
+        m_activeThinking->collapse();
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
 
     // 2. Tools désactivés : on ne peut rien exécuter. On répond quand même
     //    role="tool" à chaque tool_call (sinon l'API rejette le prochain send).
@@ -537,8 +551,10 @@ void ChatWidget::onToolCallsReady(const QList<ToolCall> &calls, const QString &a
         // stopper, sinon le prochain sendMessages sera rejeté.
         for (const ToolCall &tc : calls)
             appendToolResult(tc, QStringLiteral("Tool iteration limit reached (8). Do NOT retry."));
-        if (m_currentBubble)
-            m_currentBubble->appendThinking(QStringLiteral("⚠ Tool iteration limit reached (8).\n\n"));
+        if (m_currentBubble) {
+            auto *tb = m_currentBubble->addToolBlock(QStringLiteral("limit"));
+            tb->setResult(QStringLiteral("Tool iteration limit reached (8). Do NOT retry."), false);
+        }
         onRequestError(QStringLiteral("Too many tool iterations (limit 8)."));
         return;
     }
@@ -560,11 +576,10 @@ void ChatWidget::appendToolResult(const ToolCall &tc, const QString &result)
 void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int index)
 {
     if (index >= calls.size()) {
-        // Tous les tools ont répondu : on détache la bulle du tour courant
-        // (elle reste affichée, avec sa réflexion + le feedback des outils).
-        // Le prochain sendMessages va streamer un nouveau tour → les chunks
-        // créeront une NOUVELLE bulle. Une bulle = un tour. Voir ROADMAP item 6.
-        m_currentBubble = nullptr;
+        // Tous les tools ont répondu : on relance le modèle avec l'historique
+        // mis à jour (incluant les messages role="tool"). La carte reste la
+        // même : le prochain tour ajoutera de nouveaux blocs (thinking/content/
+        // tool) empilés dans la même carte. Une carte = une réponse agent.
         m_client->sendMessages(m_messages);
         return;
     }
@@ -578,8 +593,11 @@ void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int ind
             "Unknown tool '%1'. Available tools: %2. Do NOT retry with this name.")
             .arg(tc.name, m_registry->availableNames());
         appendToolResult(tc, msg);
-        if (m_currentBubble)
-            m_currentBubble->appendThinking(QStringLiteral("⚠ ") + msg + QStringLiteral("\n\n"));
+        if (m_currentBubble) {
+            auto *tb = m_currentBubble->addToolBlock(tc.name);
+            tb->setParams(tc.arguments);
+            tb->setResult(msg, false);
+        }
         executeToolCallsValidated(calls, index + 1);
         return;
     }
@@ -594,6 +612,11 @@ void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int ind
                 "Arguments truncated (incomplete JSON): '%1'. Do NOT retry.")
                 .arg(tc.arguments);
             appendToolResult(tc, msg);
+            if (m_currentBubble) {
+                auto *tb = m_currentBubble->addToolBlock(tc.name);
+                tb->setParams(tc.arguments);
+                tb->setResult(msg, false);
+            }
             onRequestError(msg);
             return;
         }
@@ -602,8 +625,11 @@ void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int ind
             "Invalid JSON arguments: '%1'. Provide valid JSON, then retry.")
             .arg(tc.arguments);
         appendToolResult(tc, msg);
-        if (m_currentBubble)
-            m_currentBubble->appendThinking(QStringLiteral("⚠ ") + msg + QStringLiteral("\n\n"));
+        if (m_currentBubble) {
+            auto *tb = m_currentBubble->addToolBlock(tc.name);
+            tb->setParams(tc.arguments);
+            tb->setResult(msg, false);
+        }
         executeToolCallsValidated(calls, index + 1);
         return;
     }
@@ -621,8 +647,10 @@ void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int ind
         const QString reason = checkApprovalRequired(cmd);
         if (!reason.isEmpty() && !m_sessionApprovedPatterns.contains(reason)) {
             if (m_currentBubble) {
-                m_currentBubble->appendThinking(
-                    QStringLiteral("\n\u26a0  **approval required** - %1\n").arg(reason));
+                // Bloc tool en attente d'approbation + bandeau inline.
+                m_activeTool = m_currentBubble->addToolBlock(tc.name);
+                m_activeTool->setParams(tc.arguments);
+                m_activeTool->setStatus(QStringLiteral("\u26a0"));
                 m_currentBubble->showApproval(cmd, reason);
                 scrollToBottom();
                 scheduleBlurUpdate();
@@ -633,9 +661,11 @@ void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int ind
                         switch (choice) {
                         case Bubble::AllowSession:
                             m_sessionApprovedPatterns.insert(reason);
+                            if (m_currentBubble) m_currentBubble->clearApproval();
                             executeToolCallNow(calls, index);
                             break;
                         case Bubble::AllowOnce:
+                            if (m_currentBubble) m_currentBubble->clearApproval();
                             executeToolCallNow(calls, index);
                             break;
                         case Bubble::Deny: {
@@ -644,9 +674,10 @@ void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int ind
                                 "(matched '%1'). Do NOT retry this command - the "
                                 "user has explicitly rejected it.").arg(reason);
                             appendToolResult(tc2, msg);
-                            if (m_currentBubble)
-                                m_currentBubble->appendThinking(
-                                    QStringLiteral("\u2717  denied: %1\n\n").arg(reason));
+                            if (m_activeTool)
+                                m_activeTool->setResult(msg, false);
+                            m_activeTool = nullptr;
+                            if (m_currentBubble) m_currentBubble->clearApproval();
                             executeToolCallsValidated(calls, index + 1);
                             break;
                         }
@@ -663,34 +694,29 @@ void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int ind
 void ChatWidget::executeToolCallNow(const QList<ToolCall> &calls, int index)
 {
     if (index >= calls.size()) {
-        m_currentBubble = nullptr;
         m_client->sendMessages(m_messages);
         return;
     }
     const ToolCall &tc = calls.at(index);
     const QJsonObject args = tc.parsedArgs();
 
-    // Feedback visuel dans la thinking de la bulle en cours.
-    if (m_currentBubble) {
-        QString preview = tc.arguments;
-        if (preview.size() > 120) preview = preview.left(120) + QStringLiteral("…");
-        m_currentBubble->appendThinking(
-            QStringLiteral("\n\U0001F527 **") + tc.name + QStringLiteral("** ") + preview + QStringLiteral("\n"));
+    // Bloc tool (créé ici pour le chemin nominal ; le chemin approval a déjà
+    // pré-créé m_activeTool → on le réutilise pour ne pas dupliquer).
+    if (!m_activeTool && m_currentBubble)
+        m_activeTool = m_currentBubble->addToolBlock(tc.name);
+    if (m_activeTool) {
+        m_activeTool->setParams(tc.arguments);
+        m_activeTool->setStatus(QStringLiteral("\u23f3")); // running
     }
     scrollToBottom();
     scheduleBlurUpdate();
 
     m_registry->execute(tc.name, args, [this, calls, index](bool ok, QString result) {
-        // Tronque le preview affiché dans la thinking.
-        if (m_currentBubble) {
-            QString preview = result.trimmed();
-            if (preview.size() > 400) preview = preview.left(400) + QStringLiteral("…");
-            const QString tag = ok ? QStringLiteral("\u2713") : QStringLiteral("\u26a0");
-            m_currentBubble->appendThinking(
-                tag + QStringLiteral(" ") + preview + QStringLiteral("\n\n"));
-        }
+        if (m_activeTool)
+            m_activeTool->setResult(result, ok);
 
         appendToolResult(calls.at(index), result);
+        m_activeTool = nullptr;
 
         scrollToBottom();
         scheduleBlurUpdate();
@@ -703,20 +729,19 @@ void ChatWidget::executeToolCallNow(const QList<ToolCall> &calls, int index)
 void ChatWidget::onRequestError(const QString &error)
 {
     qWarning() << "[a-ice] UI error:" << error;
-    if (m_currentBubble) {
-        // Affiche l'erreur dans la bulle en cours (zone contenu).
-        if (m_currentBubble->thinkingExpanded())
-            m_currentBubble->collapseThinking();
-        m_currentBubble->appendContent(QStringLiteral("⚠️ ") + error);
-    } else {
-        // Pas de bulle en cours : on en crée une dédiée.
+    if (!m_currentBubble)
         startAssistantBubble();
-        if (m_currentBubble)
-            m_currentBubble->appendContent(QStringLiteral("⚠️ ") + error);
+    if (m_activeThinking) m_activeThinking->collapse();
+    if (m_currentBubble) {
+        auto *cb = m_currentBubble->addContentBlock();
+        cb->set(QStringLiteral("⚠️ ") + error);
     }
     m_isTyping = false;
     setGenerating(false);
     m_currentBubble = nullptr;
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
     scheduleBlurUpdate();
 }
 

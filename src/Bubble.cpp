@@ -200,7 +200,7 @@ int Bubble::heightForWidth(int w) const
 
 void Bubble::fitToContent(int maxBubbleWidth)
 {
-    if (!m_contentLabel || m_role != Role::User) return;
+    if (!m_userLabel || m_role != Role::User) return;
 
     // Marges internes : layout (16+16 H, 12+12 V) uniquement.
     const int hPad = 16 + 16; // 32
@@ -208,11 +208,11 @@ void Bubble::fitToContent(int maxBubbleWidth)
     const int maxTextW = maxBubbleWidth - hPad;
     if (maxTextW <= 0) return;
 
-    QFont f = m_contentLabel->font();
+    QFont f = m_userLabel->font();
     f.setPixelSize(13);
 
     // Mesure via QTextDocument (rendu Markdown) pour coller au rendu reel.
-    const QSize sz = measureMarkdown(m_content, maxTextW, f);
+    const QSize sz = measureMarkdown(m_userContent, maxTextW, f);
 
     int bubbleW = qMin(sz.width() + hPad, maxBubbleWidth);
     int bubbleH = sz.height() + vPad;
@@ -248,30 +248,79 @@ void Bubble::buildUser()
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(0);
 
-    m_contentLabel = new QLabel(this);
-    m_contentLabel->setObjectName("content-label");
-    m_contentLabel->setStyleSheet(kContentStyle);
-    m_contentLabel->setWordWrap(true);
-    m_contentLabel->setTextFormat(Qt::RichText);
-    m_contentLabel->setTextInteractionFlags(kLinkFlags);
-    m_contentLabel->setOpenExternalLinks(true);
-    m_contentLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    layout->addWidget(m_contentLabel);
+    m_userLabel = new QLabel(this);
+    m_userLabel->setObjectName("content-label");
+    m_userLabel->setStyleSheet(kContentStyle);
+    m_userLabel->setWordWrap(true);
+    m_userLabel->setTextFormat(Qt::RichText);
+    m_userLabel->setTextInteractionFlags(kLinkFlags);
+    m_userLabel->setOpenExternalLinks(true);
+    m_userLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    layout->addWidget(m_userLabel);
+}
+
+void Bubble::appendContent(const QString &text)
+{
+    // Rôle user uniquement : accumulate + rendu Markdown.
+    m_userContent.append(text);
+    if (m_userLabel) m_userLabel->setText(renderMarkdown(m_userContent));
+    emit geometryChanged();
 }
 
 void Bubble::buildAssistant()
 {
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(16, 12, 16, 12);
-    layout->setSpacing(6);
+    // Carte assistant : un layout vertical qui empile les blocs au fur et à
+    // mesure (ThinkingBlock / ToolBlock / ContentBlock). Une seule carte pour
+    // toute la réponse agent (voir ROADMAP item 6, version révisée).
+    m_layout = new QVBoxLayout(this);
+    m_layout->setContentsMargins(16, 12, 16, 12);
+    m_layout->setSpacing(6);
+}
 
-    // En-tête cliquable « Réflexion ▾/▸ » (replie/déplie le texte de réflexion),
-    // aligné à GAUCHE de la bulle. Clos par défaut.
-    m_thinkingToggle = new ShimmerButton(QStringLiteral("Reasoning  \u25b8"), this);
-    m_thinkingToggle->setObjectName("thinking-toggle");
-    m_thinkingToggle->setFlat(true);
-    m_thinkingToggle->setCursor(Qt::PointingHandCursor);
-    m_thinkingToggle->setStyleSheet(
+// --- Pile de blocs (rôle assistant) ---
+ThinkingBlock *Bubble::addThinkingBlock()
+{
+    auto *b = new ThinkingBlock(this);
+    connect(b, &ThinkingBlock::geometryChanged, this, &Bubble::geometryChanged);
+    m_layout->addWidget(b);
+    b->show();
+    emit geometryChanged();
+    return b;
+}
+
+ToolBlock *Bubble::addToolBlock(const QString &name)
+{
+    auto *b = new ToolBlock(name, this);
+    connect(b, &ToolBlock::geometryChanged, this, &Bubble::geometryChanged);
+    m_layout->addWidget(b);
+    b->show();
+    emit geometryChanged();
+    return b;
+}
+
+ContentBlock *Bubble::addContentBlock()
+{
+    auto *b = new ContentBlock(this);
+    connect(b, &ContentBlock::geometryChanged, this, &Bubble::geometryChanged);
+    m_layout->addWidget(b);
+    b->show();
+    emit geometryChanged();
+    return b;
+}
+
+// --- ThinkingBlock ---
+ThinkingBlock::ThinkingBlock(QWidget *parent)
+    : QWidget(parent)
+{
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(2);
+
+    m_toggle = new ShimmerButton(QStringLiteral("Reasoning  \u25b8"), this);
+    m_toggle->setObjectName("thinking-toggle");
+    m_toggle->setFlat(true);
+    m_toggle->setCursor(Qt::PointingHandCursor);
+    m_toggle->setStyleSheet(
         "QPushButton#thinking-toggle {"
         "  background: transparent; border: none;"
         "  color: rgba(239,240,241,200);"
@@ -281,107 +330,181 @@ void Bubble::buildAssistant()
         "QPushButton#thinking-toggle:hover {"
         "  color: rgba(239,240,241,255);"
         "}");
-    m_thinkingToggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    connect(m_thinkingToggle, &QPushButton::clicked, this, &Bubble::toggleThinking);
-    layout->addWidget(m_thinkingToggle);
+    m_toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    connect(m_toggle, &QPushButton::clicked, this, [this]() {
+        if (m_expanded) collapse(); else expand();
+    });
+    layout->addWidget(m_toggle);
 
-    // Texte de réflexion (repliable) — QLabel standard, pas d'animation.
-    // Clos par défaut : l'utilisateur déplie en cliquant sur le shimmer.
-    m_thinkingLabel = new QLabel(this);
-    m_thinkingLabel->setObjectName("thinking-label");
-    m_thinkingLabel->setStyleSheet(kContentStyle);
-    m_thinkingLabel->setWordWrap(true);
-    m_thinkingLabel->setTextFormat(Qt::RichText);
-    m_thinkingLabel->setOpenExternalLinks(true);
-    m_thinkingLabel->setTextInteractionFlags(kLinkFlags);
-    m_thinkingLabel->setVisible(false); // clos par defaut
-    layout->addWidget(m_thinkingLabel);
-
-    // Contenu de la reponse finale (rendu Markdown).
-    m_contentLabel = new QLabel(this);
-    m_contentLabel->setObjectName("content-label");
-    m_contentLabel->setStyleSheet(kContentStyle);
-    m_contentLabel->setWordWrap(true);
-    m_contentLabel->setTextFormat(Qt::RichText);
-    m_contentLabel->setTextInteractionFlags(kLinkFlags);
-    m_contentLabel->setOpenExternalLinks(true);
-    m_contentLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    layout->addWidget(m_contentLabel);
-
-    m_contentLabel->setVisible(false);
+    m_label = new QLabel(this);
+    m_label->setObjectName("thinking-label");
+    m_label->setStyleSheet(kContentStyle);
+    m_label->setWordWrap(true);
+    m_label->setTextFormat(Qt::RichText);
+    m_label->setOpenExternalLinks(true);
+    m_label->setTextInteractionFlags(kLinkFlags);
+    m_label->setVisible(false); // clos par defaut
+    layout->addWidget(m_label);
 }
 
-void Bubble::refreshThinkingLabel()
+void ThinkingBlock::refresh()
 {
-    if (!m_thinkingLabel) return;
-    // Rendu Markdown (meme moteur que le contenu) -> coherent avec l'usage IA.
-    m_thinkingLabel->setText(renderMarkdown(m_thinking));
+    m_label->setText(renderMarkdown(m_text));
 }
 
-void Bubble::refreshContentLabel()
+void ThinkingBlock::append(const QString &text)
 {
-    if (!m_contentLabel) return;
-    // Rendu Markdown -> HTML. Re-parse a chaque chunk (streaming) : acceptable
-    // pour un chat, et garantit la coherence avec la mesure fitToContent.
-    m_contentLabel->setText(renderMarkdown(m_content));
-    m_contentLabel->setVisible(!m_content.isEmpty());
-}
-
-void Bubble::appendThinking(const QString &text)
-{
-    m_thinking.append(text);
-    refreshThinkingLabel();
-    if (m_thinkingToggle) m_thinkingToggle->startShimmer();
+    m_text.append(text);
+    refresh();
+    m_toggle->startShimmer();
     emit geometryChanged();
 }
 
-void Bubble::appendContent(const QString &text)
+void ThinkingBlock::set(const QString &text)
 {
-    m_content.append(text);
-    refreshContentLabel();
-    if (m_thinkingToggle) m_thinkingToggle->stopShimmer();
+    m_text = text;
+    refresh();
     emit geometryChanged();
 }
 
-void Bubble::setContent(const QString &text)
+void ThinkingBlock::collapse()
 {
-    m_content = text;
-    refreshContentLabel();
-    if (m_thinkingToggle) m_thinkingToggle->stopShimmer();
+    m_expanded = false;
+    m_label->setVisible(false);
+    m_toggle->setText(QStringLiteral("Reasoning  \u25b8"));
+    m_toggle->stopShimmer();
     emit geometryChanged();
 }
 
-void Bubble::setThinking(const QString &text)
+void ThinkingBlock::expand()
 {
-    m_thinking = text;
-    refreshThinkingLabel();
+    m_expanded = true;
+    m_label->setVisible(true);
+    m_toggle->setText(QStringLiteral("Reasoning  \u25be"));
     emit geometryChanged();
 }
 
-void Bubble::collapseThinking()
+void ThinkingBlock::startShimmer() { m_toggle->startShimmer(); }
+void ThinkingBlock::stopShimmer()  { m_toggle->stopShimmer(); }
+
+// --- ToolBlock ---
+ToolBlock::ToolBlock(const QString &name, QWidget *parent)
+    : QWidget(parent)
+    , m_name(name)
+    , m_statusIcon(QStringLiteral("\u23f3")) // sablier tant qu'aucun résultat
 {
-    if (!m_thinkingLabel) return;
-    m_thinkingExpanded = false;
-    m_thinkingLabel->setVisible(false);
-    if (m_thinkingToggle)
-        m_thinkingToggle->setText(QStringLiteral("Reasoning  ▸"));
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(2);
+
+    m_header = new QPushButton(this);
+    m_header->setObjectName("tool-header");
+    m_header->setFlat(true);
+    m_header->setCursor(Qt::PointingHandCursor);
+    m_header->setStyleSheet(
+        "QPushButton#tool-header {"
+        "  background: rgba(255,255,255,18); border: 1px solid rgba(255,255,255,40);"
+        "  border-radius: 6px; color: #e9eaee; font-size: 12px;"
+        "  padding: 4px 8px; text-align: left;"
+        "}"
+        "QPushButton#tool-header:hover { background: rgba(255,255,255,32); }");
+    m_header->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    connect(m_header, &QPushButton::clicked, this, [this]() { toggle(); });
+    layout->addWidget(m_header);
+
+    m_detail = new QLabel(this);
+    m_detail->setObjectName("tool-detail");
+    m_detail->setStyleSheet(
+        "QLabel#tool-detail { color: rgba(239,240,241,180); font-size: 11px;"
+        "  font-family: monospace; background: rgba(255,255,255,12);"
+        "  border-radius: 6px; padding: 6px 8px; }");
+    m_detail->setWordWrap(true);
+    m_detail->setTextFormat(Qt::RichText);
+    m_detail->setTextInteractionFlags(kSelectFlags);
+    m_detail->setVisible(false);
+    layout->addWidget(m_detail);
+
+    refreshHeader();
+}
+
+void ToolBlock::refreshHeader()
+{
+    const QChar arrow = m_expanded ? QChar(0x25be) : QChar(0x25b8);
+    m_header->setText(QStringLiteral("%1  %2  %3")
+                              .arg(m_statusIcon, m_name, QString(arrow)));
+}
+
+void ToolBlock::setParams(const QString &json)
+{
+    m_params = json;
+    refreshHeader();
     emit geometryChanged();
 }
 
-void Bubble::expandThinking()
+void ToolBlock::setResult(const QString &result, bool ok)
 {
-    if (!m_thinkingLabel) return;
-    m_thinkingExpanded = true;
-    m_thinkingLabel->setVisible(true);
-    if (m_thinkingToggle)
-        m_thinkingToggle->setText(QStringLiteral("Reasoning  ▾"));
+    m_result = result;
+    m_statusIcon = ok ? QStringLiteral("\u2713") : QStringLiteral("\u26a0");
+    refreshHeader();
+    QString html = QStringLiteral("<b>args:</b> %1<br><b>result:</b> %2")
+                       .arg(m_params.toHtmlEscaped(), m_result.toHtmlEscaped());
+    m_detail->setText(html);
     emit geometryChanged();
 }
 
-void Bubble::toggleThinking()
+void ToolBlock::setStatus(const QString &icon)
 {
-    if (m_thinkingExpanded) collapseThinking();
-    else                    expandThinking();
+    m_statusIcon = icon;
+    refreshHeader();
+    emit geometryChanged();
+}
+
+void ToolBlock::toggle()
+{
+    m_expanded = !m_expanded;
+    m_detail->setVisible(m_expanded);
+    refreshHeader();
+    emit geometryChanged();
+}
+
+// --- ContentBlock ---
+ContentBlock::ContentBlock(QWidget *parent)
+    : QWidget(parent)
+{
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    m_label = new QLabel(this);
+    m_label->setObjectName("content-label");
+    m_label->setStyleSheet(kContentStyle);
+    m_label->setWordWrap(true);
+    m_label->setTextFormat(Qt::RichText);
+    m_label->setTextInteractionFlags(kLinkFlags);
+    m_label->setOpenExternalLinks(true);
+    m_label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_label->setVisible(false);
+    layout->addWidget(m_label);
+}
+
+void ContentBlock::refresh()
+{
+    m_label->setText(renderMarkdown(m_text));
+    m_label->setVisible(!m_text.isEmpty());
+}
+
+void ContentBlock::append(const QString &text)
+{
+    m_text.append(text);
+    refresh();
+    emit geometryChanged();
+}
+
+void ContentBlock::set(const QString &text)
+{
+    m_text = text;
+    refresh();
+    emit geometryChanged();
 }
 
 // --- Approval inline ---------------------------------------------------------
@@ -463,6 +586,15 @@ void Bubble::showApproval(const QString &command, const QString &description)
     });
 
     m_approvalWidget = frame;
-    if (layout()) layout()->addWidget(frame);
+    if (m_layout) m_layout->addWidget(frame);
     emit geometryChanged();
+}
+
+void Bubble::clearApproval()
+{
+    if (m_approvalWidget) {
+        m_approvalWidget->deleteLater();
+        m_approvalWidget = nullptr;
+        emit geometryChanged();
+    }
 }

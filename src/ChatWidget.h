@@ -13,6 +13,9 @@
 #include "ChatMessage.h"
 
 class Bubble;
+class ThinkingBlock;
+class ToolBlock;
+class ContentBlock;
 class LlamaClient;
 class Config;
 class ToolRegistry;
@@ -108,7 +111,13 @@ private:
 
     // Bulle assistant en cours de génération.
     Bubble *m_currentBubble = nullptr;
-    QString m_currentContent; // contenu de la réponse en cours (pour l'historique)
+    // Blocs actifs du tour en cours (dans la carte courante). Un tour = un
+    // sendMessages ; une nouvelle phase de thinking/content crée un nouveau
+    // bloc dans la MÊME carte. Voir ROADMAP item 6 (révisé : une carte + blocs).
+    ThinkingBlock *m_activeThinking = nullptr;
+    ContentBlock  *m_activeContent  = nullptr;
+    ToolBlock     *m_activeTool     = nullptr;
+    QString m_currentContent; // contenu de la réponse en cours (pour l'historique API)
 
     QTimer m_blurTimer;
 
