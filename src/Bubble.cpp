@@ -1,6 +1,8 @@
 #include "Bubble.h"
 #include "Glass.h"
 #include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QFrame>
 #include <QPushButton>
 #include <QPainter>
 #include <QResizeEvent>
@@ -380,4 +382,87 @@ void Bubble::toggleThinking()
 {
     if (m_thinkingExpanded) collapseThinking();
     else                    expandThinking();
+}
+
+// --- Approval inline ---------------------------------------------------------
+void Bubble::showApproval(const QString &command, const QString &description)
+{
+    // Remplace un éventuel bandeau précédent (séquence de plusieurs dangerous).
+    if (m_approvalWidget) {
+        m_approvalWidget->deleteLater();
+        m_approvalWidget = nullptr;
+    }
+
+    auto *frame = new QFrame(this);
+    frame->setObjectName("approval-frame");
+    frame->setStyleSheet(
+        "QFrame#approval-frame {"
+        "  background: rgba(255,170,40,38);"
+        "  border: 1px solid rgba(255,170,40,120);"
+        "  border-radius: 8px;"
+        "}"
+        "QLabel#approval-warn { color: #ffcc66; font-size: 12px; }"
+        "QLabel#approval-cmd  { color: #e9eaee; font-size: 12px;"
+        "  font-family: monospace; background: rgba(255,255,255,18);"
+        "  padding: 4px 6px; border-radius: 4px; }"
+        "QPushButton#allow-once    { background: rgba(80,200,120,70);"
+        "  border: 1px solid rgba(80,200,120,140); border-radius: 6px;"
+        "  color: #e9eaee; padding: 4px 10px; }"
+        "QPushButton#allow-session { background: rgba(80,200,120,110);"
+        "  border: 1px solid rgba(80,200,120,160); border-radius: 6px;"
+        "  color: #e9eaee; padding: 4px 10px; }"
+        "QPushButton#deny          { background: rgba(220,80,80,90);"
+        "  border: 1px solid rgba(220,80,80,150); border-radius: 6px;"
+        "  color: #e9eaee; padding: 4px 10px; }"
+        "QPushButton:hover { background: rgba(255,255,255,50); }"
+    );
+
+    auto *v = new QVBoxLayout(frame);
+    v->setContentsMargins(10, 8, 10, 8);
+    v->setSpacing(6);
+
+    auto *warn = new QLabel(QStringLiteral("⚠  %1").arg(description), frame);
+    warn->setObjectName("approval-warn");
+    warn->setWordWrap(true);
+    v->addWidget(warn);
+
+    auto *cmd = new QLabel(command, frame);
+    cmd->setObjectName("approval-cmd");
+    cmd->setWordWrap(true);
+    v->addWidget(cmd);
+
+    auto *row = new QHBoxLayout();
+    row->setSpacing(8);
+
+    auto mkBtn = [frame](const char *name, const QString &label) {
+        auto *b = new QPushButton(label, frame);
+        b->setObjectName(name);
+        b->setCursor(Qt::PointingHandCursor);
+        return b;
+    };
+    auto *once    = mkBtn("allow-once",    QStringLiteral("Allow once"));
+    auto *session = mkBtn("allow-session", QStringLiteral("Allow session"));
+    auto *deny    = mkBtn("deny",          QStringLiteral("Deny"));
+    row->addWidget(once);
+    row->addWidget(session);
+    row->addStretch();
+    row->addWidget(deny);
+    v->addLayout(row);
+
+    connect(once,    &QPushButton::clicked, this, [this]() {
+        if (m_approvalWidget) m_approvalWidget->hide();
+        emit approvalResult(AllowOnce);
+    });
+    connect(session, &QPushButton::clicked, this, [this]() {
+        if (m_approvalWidget) m_approvalWidget->hide();
+        emit approvalResult(AllowSession);
+    });
+    connect(deny,    &QPushButton::clicked, this, [this]() {
+        if (m_approvalWidget) m_approvalWidget->hide();
+        emit approvalResult(Deny);
+    });
+
+    m_approvalWidget = frame;
+    if (layout()) layout()->addWidget(frame);
+    emit geometryChanged();
 }

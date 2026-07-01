@@ -109,6 +109,58 @@ static const Case kDangerousCases[] = {
     {"find . -name foo",                  false, "find sans -delete/-exec rm"},
 };
 
+// --- Approval policy (checkApprovalRequired) ---
+// shouldBlock=true = approval requise (non vide). false = auto-allow (vide).
+static const Case kApprovalCases[] = {
+    // Mutations (non read-only) → approval :
+    {"mkdir newdir",                      true,  "mutation: mkdir"},
+    {"touch file.txt",                    true,  "mutation: touch"},
+    {"rm file.txt",                       true,  "mutation: rm (pas read-only)"},
+    {"echo hi \u003e file.txt",            true,  "mutation: redirect"},
+    {"cat x | grep y",                    true,  "mutation: pipe (conservateur)"},
+    {"git commit -m wip",                 true,  "mutation: git commit"},
+    {"git push",                          true,  "mutation: git push"},
+    {"make",                              true,  "mutation: make"},
+    {"npm install x",                     true,  "mutation: npm install"},
+    {"python script.py",                  true,  "mutation: python script"},
+
+    // Dangerous → approval :
+    {"rm -rf /tmp/x",                     true,  "dangerous: rm -r"},
+    {"git reset --hard",                  true,  "dangerous: git reset --hard"},
+    {"chmod 777 f",                       true,  "dangerous: world-writable"},
+    {"bash -c 'x'",                       true,  "dangerous: shell -c"},
+    {"sed -i 's/a/b/' f",                 true,  "dangerous: sed -i"},
+
+    // Sensitive paths → approval (même en lecture) :
+    {"cat ~/.ssh/id_rsa",                 true,  "sensitive: ~/.ssh/"},
+    {"ls ~/.ssh/",                        true,  "sensitive: ~/.ssh/"},
+    {"cat /etc/shadow",                   true,  "sensitive: /etc/shadow"},
+
+    // Lecture pure → auto-allow :
+    {"ls -la ~",                          false, "read-only: ls"},
+    {"cat README.md",                     false, "read-only: cat"},
+    {"git status",                        false, "read-only: git status"},
+    {"git log --oneline",                 false, "read-only: git log"},
+    {"git diff",                          false, "read-only: git diff"},
+    {"git show HEAD",                     false, "read-only: git show"},
+    {"find . -name foo",                  false, "read-only: find"},
+    {"grep pattern file",                 false, "read-only: grep"},
+    {"echo hello",                        false, "read-only: echo (no redirect)"},
+    {"head -20 file",                     false, "read-only: head"},
+    {"ps aux",                            false, "read-only: ps"},
+    {"df -h",                             false, "read-only: df"},
+    {"du -sh .",                          false, "read-only: du"},
+    {"realpath .",                        false, "read-only: realpath"},
+    {"pwd",                               false, "read-only: pwd"},
+    {"whoami",                            false, "read-only: whoami"},
+
+    // Hardline → checkApprovalRequired retourne vide (le hardline bloquera,
+    // pas d'approval sur une commande non-récupérable) :
+    {"rm -rf /",                          false, "hardline: géré par checkHardline, pas d'approval"},
+    {"mkfs /dev/sda",                     false, "hardline: pas d'approval"},
+    {"shutdown now",                      false, "hardline: pas d'approval"},
+};
+
 static int runSection(const char *title, const Case *cases, int n,
                       bool (*check)(const QString &) /* returns true if matched */)
 {
@@ -147,6 +199,10 @@ int main()
     totalFailures += runSection("DANGEROUS (approve-once)",
         kDangerousCases, int(sizeof(kDangerousCases)/sizeof(kDangerousCases[0])),
         [](const QString &cmd) { return !checkDangerous(cmd).isEmpty(); });
+
+    totalFailures += runSection("APPROVAL POLICY (checkApprovalRequired)",
+        kApprovalCases, int(sizeof(kApprovalCases)/sizeof(kApprovalCases[0])),
+        [](const QString &cmd) { return !checkApprovalRequired(cmd).isEmpty(); });
 
     std::printf("=== TOTAL: %d failure(s) ===\n", totalFailures);
     return totalFailures == 0 ? 0 : 1;

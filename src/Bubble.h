@@ -59,9 +59,17 @@ public:
     /// lignes rendues (y compris word-wrap). Appeler après appendContent().
     void fitToContent(int maxWidth);
 
+    // --- Approval inline (dangerous command) ---
+    enum ApprovalChoice { AllowOnce = 0, AllowSession = 1, Deny = 2 };
+    /// Affiche un bandeau d'approbation inline (non-modal) dans la bulle :
+    /// warning + commande + 3 boutons. Émet approvalResult() au clic.
+    void showApproval(const QString &command, const QString &description);
+
 signals:
     /// Émis quand la géométrie/visibilité change (pour recalculer le blur).
     void geometryChanged();
+    /// Émis au clic sur un bouton d'approbation. choice = ApprovalChoice.
+    void approvalResult(int choice);
 
 protected:
     void resizeEvent(QResizeEvent *) override { emit geometryChanged(); }
@@ -89,4 +97,7 @@ private:
     // Cache de l'ombre (ne dépend que de la taille de la carte).
     QImage m_shadow;
     QSize  m_shadowKey;
+
+    // Bandeau d'approbation inline (nullptr si aucun en cours).
+    QWidget *m_approvalWidget = nullptr;
 };

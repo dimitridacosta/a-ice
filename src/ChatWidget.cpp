@@ -6,6 +6,7 @@
 #include "ToolRegistry.h"
 #include "Tool.h"
 #include "tools/TerminalTool.h"
+#include "tools/TerminalSafety.h"
 #include "tools/BraveSearchTool.h"
 #include "tools/WebFetchTool.h"
 #include <KWindowEffects>
@@ -597,8 +598,65 @@ void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int ind
         return;
     }
 
-    // (c) Cas nominal : exécution du tool via le registry (le guard item 2
-    //     garantit que le callback est invoqué exactement une fois).
+    // (c) Cas nominal : tool connu + JSON valide.
+    const QJsonObject args = tc.parsedArgs();
+
+    // Sécurité — approval policy (mutations + paths sensibles + dangerous).
+    // Uniquement pour le terminal : on check la commande via checkApprovalRequired.
+    // Tout ce qui n'est pas lecture pure (ou qui touche une zone sensible) demande
+    // approbation. Si pas encore approuvé en session, on suspend la boucle et on
+    // demande l'approbation inline (bulle en cours).
+    if (tc.name == QLatin1String("terminal")) {
+        const QString cmd = args.value(QStringLiteral("command")).toString();
+        const QString reason = checkApprovalRequired(cmd);
+        if (!reason.isEmpty() && !m_sessionApprovedPatterns.contains(reason)) {
+            if (m_currentBubble) {
+                m_currentBubble->appendThinking(
+                    QStringLiteral("\n\u26a0  **approval required** - %1\n").arg(reason));
+                m_currentBubble->showApproval(cmd, reason);
+                scrollToBottom();
+                scheduleBlurUpdate();
+                // Connexion one-shot : reprend la boucle au clic.
+                connect(m_currentBubble, &Bubble::approvalResult, this,
+                    [this, calls, index, reason](int choice) {
+                        const ToolCall &tc2 = calls.at(index);
+                        switch (choice) {
+                        case Bubble::AllowSession:
+                            m_sessionApprovedPatterns.insert(reason);
+                            executeToolCallNow(calls, index);
+                            break;
+                        case Bubble::AllowOnce:
+                            executeToolCallNow(calls, index);
+                            break;
+                        case Bubble::Deny: {
+                            const QString msg = QStringLiteral(
+                                "User denied this command requiring approval "
+                                "(matched '%1'). Do NOT retry this command - the "
+                                "user has explicitly rejected it.").arg(reason);
+                            appendToolResult(tc2, msg);
+                            if (m_currentBubble)
+                                m_currentBubble->appendThinking(
+                                    QStringLiteral("\u2717  denied: %1\n\n").arg(reason));
+                            executeToolCallsValidated(calls, index + 1);
+                            break;
+                        }
+                        }
+                    }, Qt::SingleShotConnection);
+            }
+            return; // suspendu en attente d'approbation
+        }
+    }
+
+    executeToolCallNow(calls, index);
+}
+
+void ChatWidget::executeToolCallNow(const QList<ToolCall> &calls, int index)
+{
+    if (index >= calls.size()) {
+        m_client->sendMessages(m_messages);
+        return;
+    }
+    const ToolCall &tc = calls.at(index);
     const QJsonObject args = tc.parsedArgs();
 
     // Feedback visuel dans la thinking de la bulle en cours.
@@ -606,7 +664,7 @@ void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int ind
         QString preview = tc.arguments;
         if (preview.size() > 120) preview = preview.left(120) + QStringLiteral("…");
         m_currentBubble->appendThinking(
-            QStringLiteral("\n🔧 **") + tc.name + QStringLiteral("** ") + preview + QStringLiteral("\n"));
+            QStringLiteral("\n\U0001F527 **") + tc.name + QStringLiteral("** ") + preview + QStringLiteral("\n"));
     }
     scrollToBottom();
     scheduleBlurUpdate();
@@ -616,7 +674,7 @@ void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int ind
         if (m_currentBubble) {
             QString preview = result.trimmed();
             if (preview.size() > 400) preview = preview.left(400) + QStringLiteral("…");
-            const QString tag = ok ? QStringLiteral("✓") : QStringLiteral("⚠");
+            const QString tag = ok ? QStringLiteral("\u2713") : QStringLiteral("\u26a0");
             m_currentBubble->appendThinking(
                 tag + QStringLiteral(" ") + preview + QStringLiteral("\n\n"));
         }

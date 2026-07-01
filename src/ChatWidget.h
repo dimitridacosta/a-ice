@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QList>
+#include <QSet>
 #include <QScopedPointer>
 #include <QTimer>
 #include <QString>
@@ -75,6 +76,11 @@ private:
     /// client. Voir ROADMAP item 3.
     void executeToolCallsValidated(const QList<ToolCall> &calls, int index);
 
+    /// Exécute réellement un tool_call validé (feedback bulle + registry->execute
+    /// + append du résultat + tool suivant). Factorisé pour partager entre le
+    /// chemin nominal et la reprise après approbation d'une commande dangerous.
+    void executeToolCallNow(const QList<ToolCall> &calls, int index);
+
     /// Ajoute un message role="tool" à l'historique (résultat de tool).
     /// Factorise l'injection des tool results (incl. cas d'erreur).
     void appendToolResult(const ToolCall &tc, const QString &result);
@@ -109,4 +115,5 @@ private:
     bool m_isTyping = false;
     int m_toolIterations = 0;
     QList<ChatMessage> m_messages;
+    QSet<QString> m_sessionApprovedPatterns; // dangerous patterns approuvés pour la session
 };
