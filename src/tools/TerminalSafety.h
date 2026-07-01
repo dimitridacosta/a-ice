@@ -27,3 +27,10 @@ QString checkDangerous(const QString &command);
 //   - sinon (lecture pure + pas sensible) → {} = auto-allow
 // Renvoie la raison de l'approval (clé de session) ou une QString vide.
 QString checkApprovalRequired(const QString &command);
+
+// sanitizeToolResult() assainit le résultat d'un tool avant de l'injecter dans
+// l'historique (role="tool"). Surtout critique pour fetch_url (HTML distant) :
+// retire les tags <tool_call>/<function_call>/<result>/... qui pourraient être
+// interprétés comme un tool_call fantôme par le modèle (injection), retire les
+// fences ``` de début/fin, tronque à 2000 chars, et préfixe avec "[TOOL] ".
+QString sanitizeToolResult(const QString &result);

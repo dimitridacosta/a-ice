@@ -239,3 +239,30 @@ QString checkApprovalRequired(const QString &command)
     // 5. Lecture pure + pas sensible → auto-allow.
     return {};
 }
+
+// --- Sanitize tool results (anti-injection) ---------------------------------
+QString sanitizeToolResult(const QString &result)
+{
+    QString s = result;
+    // Retire les tags <tool_call>, <function_call>, <result>, <response>,
+    // <output>, <input>, <system>, <assistant>, <user> (ouvrants/fermants).
+    static const QRegularExpression kTags(
+        QStringLiteral("</?(?:tool_call|function_call|result|response|"
+                       "output|input|system|assistant|user)>"),
+        QRegularExpression::CaseInsensitiveOption);
+    s.remove(kTags);
+    // Retire les fences ``` de début (avec langue optionnelle).
+    static const QRegularExpression kOpenFence(
+        QStringLiteral("^\\s*```(?:json|xml|html|markdown)?\\s*"),
+        QRegularExpression::MultilineOption);
+    s.remove(kOpenFence);
+    // Retire les fences ``` de fin.
+    static const QRegularExpression kCloseFence(
+        QStringLiteral("\\s*```\\s*$"),
+        QRegularExpression::MultilineOption);
+    s.remove(kCloseFence);
+    // Tronque à 2000 chars (anti-inondation du contexte).
+    if (s.size() > 2000)
+        s = s.left(1997) + QStringLiteral("...");
+    return QStringLiteral("[TOOL] ") + s;
+}

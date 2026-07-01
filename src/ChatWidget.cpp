@@ -546,7 +546,7 @@ void ChatWidget::appendToolResult(const ToolCall &tc, const QString &result)
     toolMsg.role = QStringLiteral("tool");
     toolMsg.toolCallId = tc.id;
     toolMsg.toolName = tc.name;
-    toolMsg.content = result;
+    toolMsg.content = sanitizeToolResult(result);
     m_messages.append(toolMsg);
 }
 
