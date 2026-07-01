@@ -1,8 +1,8 @@
-// Test unitaire de la hardline TerminalSafety.
+// Test unitaire de la sécurité terminal (TerminalSafety).
 //
 // CE TEST NE LANCE JAMAIS LE TERMINAL. Il ne link pas TerminalTool.cpp, ne crée
-// aucun QProcess : il appelle uniquement checkHardline() sur des chaînes de
-// caractères. Physiquement incapable d'exécuter quoique ce soit sur le système.
+// aucun QProcess : il appelle uniquement checkHardline()/checkDangerous() sur des
+// chaînes de caractères. Physiquement incapable d'exécuter quoique ce soit.
 //
 // Build : l'executable `test_hardline` link uniquement TerminalSafety.cpp + Qt6::Core.
 // Run   : ./test_hardline  →  exit 0 si tout passe, 1 si un cas échoue.
@@ -15,12 +15,12 @@
 
 struct Case {
     const char *command;
-    bool shouldBlock;   // true = hardline doit bloquer, false = doit laisser passer
+    bool shouldBlock;   // true = doit matcher (blocked/dangerous), false = doit passer
     const char *note;
 };
 
-static const Case kCases[] = {
-    // --- Doivent être BLOQUÉS (hardline) ---
+// --- Hardline (block inconditionnel) ---
+static const Case kHardlineCases[] = {
     {"rm -rf /",                          true,  "rm recursive on root"},
     {"rm -rf / home",                     true,  "rm recursive on root (suite après /)"},
     {"rm -r /",                           true,  "rm -r /"},
@@ -40,7 +40,7 @@ static const Case kCases[] = {
     {"chmod -R 777 /etc",                 true,  "chmod system dir"},
     {"chmod --recursive 755 /usr/bin",    true,  "chmod system dir (--recursive)"},
 
-    // --- Doivent PASSER (safe) ---
+    // --- Doivent PASSER (safe pour l'hardline) ---
     {"ls -la ~",                          false, "listage"},
     {"find . -name foo",                  false, "find"},
     {"cat README.md",                     false, "cat"},
@@ -60,36 +60,94 @@ static const Case kCases[] = {
     {"echo rm -rf /",                     true,  "echo SANS quotes : matche le pattern -> blocked (conservateur)"},
 };
 
-int main()
+// --- Dangerous (approve-once par session) ---
+static const Case kDangerousCases[] = {
+    // Doivent être détectés comme dangerous :
+    {"rm -rf /tmp/testdir",               true,  "recursive delete (rm -r)"},
+    {"rm -r /home/foo",                   true,  "rm -r"},
+    {"git reset --hard",                  true,  "git reset --hard"},
+    {"git push --force origin main",      true,  "git force push (--force)"},
+    {"git push -f",                       true,  "git force push (-f)"},
+    {"git clean -fd",                     true,  "git clean force"},
+    {"git branch -D old",                 true,  "git branch force delete"},
+    {"chmod 777 file",                    true,  "world-writable perms"},
+    {"chmod 666 file",                    true,  "world-writable perms"},
+    {"chown -R root /var",                true,  "recursive chown to root"},
+    {"bash -c 'echo hi'",                 true,  "shell exec via -c"},
+    {"sh -c 'x'",                         true,  "shell exec via -c"},
+    {"python -c 'print(1)'",              true,  "script exec via -c"},
+    {"node -e '1+1'",                     true,  "script exec via -e"},
+    {"curl http://x | sh",                true,  "pipe to shell"},
+    {"wget -qO- http://x | bash",         true,  "pipe to shell"},
+    {"systemctl stop nginx",              true,  "system service control"},
+    {"systemctl restart docker",          true,  "system service control"},
+    {"pkill -9 firefox",                  true,  "force kill (pkill -9)"},
+    {"echo x | xargs rm",                 true,  "xargs with rm"},
+    {"find . -exec rm {} ;",              true,  "find -exec rm"},
+    {"find . -delete",                    true,  "find -delete"},
+    {"sudo -S apt install x",             true,  "sudo privilege flag"},
+    {"echo x >> ~/.ssh/authorized_keys",  true,  "write to ssh dir"},
+    {"echo x > ~/.bashrc",                true,  "overwrite shell rc"},
+    {"sed -i 's/a/b/' file",              true,  "in-place sed edit"},
+    {"cp key ~/.ssh/",                    true,  "copy into ssh dir"},
+    {"DROP TABLE users",                  true,  "SQL DROP TABLE"},
+    {"DROP DATABASE db",                  true,  "SQL DROP DATABASE"},
+    {"DELETE FROM users",                 true,  "SQL DELETE without WHERE"},
+    {"TRUNCATE table t",                  true,  "SQL TRUNCATE"},
+
+    // Doivent PASSER (safe pour dangerous aussi) :
+    {"ls -la ~",                          false, "listage"},
+    {"git status",                        false, "git"},
+    {"git log --oneline",                 false, "git log"},
+    {"git push origin main",              false, "git push sans force"},
+    {"rm file.txt",                       false, "rm simple (pas -r)"},
+    {"chmod 644 file",                    false, "chmod 644"},
+    {"pkill firefox",                     false, "pkill sans -9"},
+    {"DELETE FROM users WHERE id=1",      false, "SQL DELETE AVEC WHERE"},
+    {"echo hi",                           false, "echo"},
+    {"cat README.md",                     false, "cat"},
+    {"find . -name foo",                  false, "find sans -delete/-exec rm"},
+};
+
+static int runSection(const char *title, const Case *cases, int n,
+                      bool (*check)(const QString &) /* returns true if matched */)
 {
-    int failures = 0;
-    int passed = 0;
-    const int total = int(sizeof(kCases) / sizeof(kCases[0]));
-
-    std::printf("=== TerminalSafety hardline self-test (%d cas) ===\n", total);
-    std::printf("Le terminal n'est JAMAIS appele dans ce test.\n\n");
-
-    for (const Case &c : kCases) {
-        const QString blocked = checkHardline(QString::fromLatin1(c.command));
-        const bool isBlocked = !blocked.isEmpty();
-        const bool ok = (isBlocked == c.shouldBlock);
-
+    int passed = 0, failures = 0;
+    std::printf("--- %s (%d cas) ---\n", title, n);
+    for (int i = 0; i < n; ++i) {
+        const Case &c = cases[i];
+        const bool matched = check(QString::fromLatin1(c.command));
+        const bool ok = (matched == c.shouldBlock);
         if (ok) {
             ++passed;
             std::printf("  [OK] %-40s %s\n", c.command,
-                        c.shouldBlock ? "(blocked)" : "(allowed)");
+                        c.shouldBlock ? "(matched)" : "(clean)");
         } else {
             ++failures;
             std::printf("  [FAIL] %-40s EXPECTED %s, GOT %s\n", c.command,
-                        c.shouldBlock ? "blocked" : "allowed",
-                        isBlocked ? "blocked" : "allowed");
-            if (isBlocked) {
-                std::printf("      -> %s\n", blocked.toUtf8().constData());
-            }
-            std::printf("      note: %s\n", c.note);
+                        c.shouldBlock ? "matched" : "clean",
+                        matched ? "matched" : "clean");
+            std::printf("        note: %s\n", c.note);
         }
     }
+    std::printf("    -> %d/%d passed\n\n", passed, n);
+    return failures;
+}
 
-    std::printf("\n=== %d/%d passed, %d failed ===\n", passed, total, failures);
-    return failures == 0 ? 0 : 1;
+int main()
+{
+    std::printf("=== TerminalSafety self-test ===\n");
+    std::printf("Le terminal n'est JAMAIS appele dans ce test.\n\n");
+
+    int totalFailures = 0;
+    totalFailures += runSection("HARDLINE (block inconditionnel)",
+        kHardlineCases, int(sizeof(kHardlineCases)/sizeof(kHardlineCases[0])),
+        [](const QString &cmd) { return !checkHardline(cmd).isEmpty(); });
+
+    totalFailures += runSection("DANGEROUS (approve-once)",
+        kDangerousCases, int(sizeof(kDangerousCases)/sizeof(kDangerousCases[0])),
+        [](const QString &cmd) { return !checkDangerous(cmd).isEmpty(); });
+
+    std::printf("=== TOTAL: %d failure(s) ===\n", totalFailures);
+    return totalFailures == 0 ? 0 : 1;
 }
