@@ -13,6 +13,8 @@
 #include <QTextBlock>
 #include <QFontInfo>
 #include <QRegularExpression>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <cmath>
 
 // --- Rendu Markdown -> HTML (Qt6 natif) ---
@@ -369,7 +371,7 @@ ThinkingBlock::ThinkingBlock(QWidget *parent)
 {
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(2);
+    layout->setSpacing(0);
 
     m_toggle = new ShimmerButton(QStringLiteral("Reasoning  \u25b8"), this);
     m_toggle->setObjectName("thinking-toggle");
@@ -377,10 +379,10 @@ ThinkingBlock::ThinkingBlock(QWidget *parent)
     m_toggle->setCursor(Qt::PointingHandCursor);
     m_toggle->setStyleSheet(
         "QPushButton#thinking-toggle {"
-        "  background: transparent; border: none;"
+        "  background: transparent; border: none; margin: 0;"
         "  color: rgba(239,240,241,200);"
         "  font-size: 11px; font-style: italic;"
-        "  padding: 2px 4px; text-align: left;"
+        "  padding: 0px; text-align: left;"
         "}"
         "QPushButton#thinking-toggle:hover {"
         "  color: rgba(239,240,241,255);"
@@ -452,19 +454,19 @@ ToolBlock::ToolBlock(const QString &name, QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
 
-    m_header = new QPushButton(this);
+    m_header = new QLabel(this);
     m_header->setObjectName("tool-header");
-    m_header->setFlat(true);
+    m_header->setTextFormat(Qt::RichText);
     m_header->setCursor(Qt::PointingHandCursor);
     m_header->setStyleSheet(
-        "QPushButton#tool-header {"
+        "QLabel#tool-header {"
         "  background: rgba(255,255,255,18); border: 1px solid rgba(255,255,255,40);"
         "  border-radius: 6px; color: #e9eaee; font-size: 12px;"
-        "  padding: 4px 8px; text-align: left;"
+        "  padding: 4px 8px;"
         "}"
-        "QPushButton#tool-header:hover { background: rgba(255,255,255,32); }");
+        "QLabel#tool-header:hover { background: rgba(255,255,255,32); }");
     m_header->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    connect(m_header, &QPushButton::clicked, this, [this]() { toggle(); });
+    m_header->installEventFilter(this);
     layout->addWidget(m_header);
 
     m_detail = new QLabel(this);
@@ -485,13 +487,67 @@ ToolBlock::ToolBlock(const QString &name, QWidget *parent)
 void ToolBlock::refreshHeader()
 {
     const QChar arrow = m_expanded ? QChar(0x25be) : QChar(0x25b8);
-    m_header->setText(QStringLiteral("%1  %2  %3")
-                              .arg(m_statusIcon, m_name, QString(arrow)));
+    // Header en rich text : nom du tool en bold, description plus claire (blanc
+    // cassé) pour rester lisible meme minifié, arrow gris léger.
+    QString descHtml;
+    if (!m_summary.isEmpty()) {
+        QString s = m_summary.toHtmlEscaped();
+        descHtml = QStringLiteral(
+            "\u00a0\u00a0<span style=\"color:#f5f6f8\">%1</span>").arg(s);
+    }
+    m_header->setText(QStringLiteral(
+        "%1\u00a0\u00a0<b>%2</b>%3\u00a0\u00a0"
+        "<span style=\"color:rgba(239,240,241,160)\">%4</span>")
+        .arg(m_statusIcon, m_name.toHtmlEscaped(), descHtml, QString(arrow)));
+}
+
+bool ToolBlock::eventFilter(QObject *watched, QEvent *event)
+{
+    // Clic sur le header (QLabel) → toggle expand/collapse.
+    if (watched == m_header && event->type() == QEvent::MouseButtonPress) {
+        toggle();
+        return true;
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+QString ToolBlock::extractSummary(const QString &name, const QString &json)
+{
+    // Champs pertinents par tool (le plus informatif pour le header minifie).
+    QString key;
+    if (name == QLatin1String("terminal"))
+        key = QStringLiteral("command");
+    else if (name == QLatin1String("fetch_url") || name == QLatin1String("web_fetch"))
+        key = QStringLiteral("url");
+    else if (name == QLatin1String("brave_search"))
+        key = QStringLiteral("query");
+
+    const QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8());
+    QString val;
+    if (doc.isObject()) {
+        const QJsonObject obj = doc.object();
+        if (!key.isEmpty() && obj.contains(key))
+            val = obj.value(key).toString();
+        else {
+            // Fallback : premiere valeur string du JSON.
+            for (auto it = obj.begin(); it != obj.end(); ++it) {
+                if (it.value().isString()) { val = it.value().toString(); break; }
+            }
+        }
+    }
+    val = val.trimmed();
+    if (val.isEmpty()) return QStringLiteral("");
+    // Tronque avec ellipsis pour rester sur une ligne de header.
+    const int max = 48;
+    if (val.size() > max) val = val.left(max - 1) + QStringLiteral("\u2026");
+    // Echappe les esperluettes/etc. pour le rendu du bouton (texte plain).
+    return val;
 }
 
 void ToolBlock::setParams(const QString &json)
 {
     m_params = json;
+    m_summary = extractSummary(m_name, json);
     refreshHeader();
     emit geometryChanged();
 }

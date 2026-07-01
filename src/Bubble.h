@@ -85,13 +85,20 @@ signals:
 private:
     void toggle();
     void refreshHeader();
-    QPushButton *m_header;
+    /// Extrait un resume court du JSON de params (command/url/query/...) pour
+    /// l'afficher dans le header minifie. Tronque avec ellipsis si trop long.
+    static QString extractSummary(const QString &name, const QString &json);
+    QLabel *m_header;        // rich text : nom bold + desc claire + arrow
     QLabel *m_detail;
     QString m_name;
     QString m_params;
     QString m_result;
     QString m_statusIcon;
+    QString m_summary;  // resume affiche dans le header (ex: debut de commande)
     bool m_expanded = false;
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 };
 
 /**
