@@ -65,3 +65,12 @@ add_executable(test_hardline
     src/tools/TerminalSafety.cpp
 )
 target_link_libraries(test_hardline PRIVATE Qt6::Core)
+
+# --- Test unitaire ChatMessage (repair historique, item 7) -------------
+# Link uniquement ChatMessage.cpp + Qt6::Core. Aucun terminal, aucun réseau.
+add_executable(test_chatmessage
+    tests/test_chatmessage.cpp
+    src/ChatMessage.h
+    src/ChatMessage.cpp
+)
+target_link_libraries(test_chatmessage PRIVATE Qt6::Core)

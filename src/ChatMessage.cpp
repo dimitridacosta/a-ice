@@ -40,7 +40,16 @@ QJsonObject ChatMessage::toJson() const
             c["type"] = QStringLiteral("function");
             QJsonObject fn;
             fn["name"] = tc.name;
-            fn["arguments"] = tc.arguments;
+            // Repair historique (item 7) : si tc.arguments n'est pas du JSON
+            // valide (tronqué pendant le stream, ou bug du modèle), on envoie
+            // "{}" plutôt que la chaîne cassée — sinon l'API rejette tout le
+            // payload au prochain sendMessages.
+            QJsonParseError argErr;
+            const QJsonDocument argDoc =
+                QJsonDocument::fromJson(tc.arguments.toUtf8(), &argErr);
+            fn["arguments"] = (argErr.error == QJsonParseError::NoError)
+                                   ? tc.arguments
+                                   : QStringLiteral("{}");
             c["function"] = fn;
             calls.append(c);
         }
