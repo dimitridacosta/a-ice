@@ -138,6 +138,7 @@ private:
 
     bool m_isTyping = false;
     int m_toolIterations = 0;
+    int m_maxToolIterations = 8; // limite anti-boucle, config via tools.max_tool_iterations
     bool m_interruptRequested = false;        // bouton Stop pendant exec tools
     QString m_toolCallInProgressId;           // tool_call_id en cours (pour inject "cancelled")
     QString m_toolCallInProgressName;

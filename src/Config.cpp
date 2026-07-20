@@ -111,6 +111,9 @@ bool Config::load(const QString &path)
     if (tools.contains(QStringLiteral("terminal_workdir"))) {
         m_tools.terminalWorkdir = tools.value(QStringLiteral("terminal_workdir")).toString();
     }
+    if (tools.contains(QStringLiteral("max_tool_iterations"))) {
+        m_tools.maxToolIterations = tools.value(QStringLiteral("max_tool_iterations")).toInt(m_tools.maxToolIterations);
+    }
     // Override via env var BRAVE_API_KEY (priorité sur config).
     const QByteArray envKey = qgetenv("BRAVE_API_KEY");
     if (!envKey.isEmpty()) {
@@ -123,7 +126,8 @@ bool Config::load(const QString &path)
 
     qInfo() << "[a-ice] tools: enabled=" << m_tools.enabled
             << "brave=" << (!m_tools.braveApiKey.isEmpty() ? "configured" : "-")
-            << "workdir=" << m_tools.terminalWorkdir;
+            << "workdir=" << m_tools.terminalWorkdir
+            << "max_tool_iterations=" << m_tools.maxToolIterations;
 
     // Chargement du SOUL.md (prompt système) : à côté de config.json,
     // sinon fallback sur share/a-ice/SOUL.md installé.

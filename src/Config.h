@@ -53,6 +53,7 @@ public:
         bool enabled = false;
         QString braveApiKey;   // clé API Brave Search
         QString terminalWorkdir; // home par défaut
+        int maxToolIterations = 8; // limite anti-boucle de tool calls par message
     };
 
     Config();

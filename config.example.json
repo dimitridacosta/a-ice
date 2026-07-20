@@ -13,6 +13,7 @@
   "tools": {
     "enabled": true,
     "brave_api_key": "",
-    "terminal_workdir": ""
+    "terminal_workdir": "",
+    "max_tool_iterations": 8
   }
 }

@@ -361,6 +361,7 @@ void ChatWidget::applyConfig(const Config &config)
 
 void ChatWidget::setupTools(const Config &config)
 {
+    m_maxToolIterations = config.tools().maxToolIterations;
     if (!config.tools().enabled) {
         m_registry.reset();
         m_client->setTools({});
@@ -684,18 +685,19 @@ void ChatWidget::onToolCallsReady(const QList<ToolCall> &calls, const QString &a
         return;
     }
 
-    // 3. Limite anti-boucle : on tolère 8 tours de tools par message utilisateur.
-    if (++m_toolIterations > 8) {
+    // 3. Limite anti-boucle : configurable via tools.max_tool_iterations
+    //    (config.json), 8 par defaut.
+    if (++m_toolIterations > m_maxToolIterations) {
         // L'API OpenAI-compatible exige une réponse role="tool" pour chaque
         // tool_call_id. On en injecte une "limit reached" par call avant de
         // stopper, sinon le prochain sendMessages sera rejeté.
         for (const ToolCall &tc : calls)
-            appendToolResult(tc, QStringLiteral("Tool iteration limit reached (8). Do NOT retry."));
+            appendToolResult(tc, QStringLiteral("Tool iteration limit reached (%1). Do NOT retry.").arg(m_maxToolIterations));
         if (m_currentBubble) {
             auto *tb = m_currentBubble->addToolBlock(QStringLiteral("limit"));
-            tb->setResult(QStringLiteral("Tool iteration limit reached (8). Do NOT retry."), false);
+            tb->setResult(QStringLiteral("Tool iteration limit reached (%1). Do NOT retry.").arg(m_maxToolIterations), false);
         }
-        onRequestError(QStringLiteral("Too many tool iterations (limit 8)."));
+        onRequestError(QStringLiteral("Too many tool iterations (limit %1).").arg(m_maxToolIterations));
         return;
     }
 
