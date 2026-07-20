@@ -6,11 +6,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
-#include <QJsonArray>
 #include <QTimer>
 #include <QUrl>
 #include <QPointer>
-#include <QJsonArray>
+#include <QDebug>
 #include <algorithm>
 
 BraveSearchTool::BraveSearchTool(const QString &apiKey, QObject *parent)
@@ -83,7 +82,13 @@ void BraveSearchTool::execute(const QJsonObject &args,
     QNetworkRequest req(url);
     req.setRawHeader("X-Subscription-Token", m_apiKey.toUtf8());
     req.setRawHeader("Accept", "application/json");
-    req.setRawHeader("Accept-Encoding", "gzip");
+    // NB : ne PAS fixer "Accept-Encoding" manuellement. Qt gere la
+    // decompression gzip automatiquement tant que ce header n'est pas
+    // present dans la requete ; le fixer soi-meme desactive cette
+    // decompression automatique et QNetworkAccessManager renvoie alors
+    // le corps gzip brut, que QJsonDocument::fromJson echoue a parser
+    // ("illegal number" sur le magic byte 0x1f). Bug reproduit et corrige
+    // le 2026-07-20.
 
     QNetworkReply *reply = m_nam->get(req);
 
@@ -120,6 +125,10 @@ void BraveSearchTool::execute(const QJsonObject &args,
         QJsonParseError parseErr;
         QJsonDocument doc = QJsonDocument::fromJson(body, &parseErr);
         if (parseErr.error != QJsonParseError::NoError) {
+            qDebug() << "[a-ice] Brave search JSON parse failed:" << parseErr.errorString()
+                     << "Content-Type:" << r->header(QNetworkRequest::ContentTypeHeader).toString()
+                     << "Body size:" << body.size();
+            qDebug().noquote() << "[a-ice] Body preview:" << QString::fromUtf8(body.left(300));
             cb(false, QStringLiteral("[a-ice] Brave search: invalid JSON: %1")
                            .arg(parseErr.errorString()));
             return;
