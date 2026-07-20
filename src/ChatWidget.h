@@ -46,6 +46,8 @@ public:
     QString getServerUrl() const;
     void setServerUrl(const QString &url);
     void applyConfig(const Config &config);
+    /// Refocus le prompt (apres retour de l overlay au premier plan).
+    void refocusPrompt();
 
 signals:
     void messageSent(const QString &text);

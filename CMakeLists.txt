@@ -8,7 +8,7 @@ set(CMAKE_AUTOMOC ON)
 # KF6 / Qt6 (Plasma 6 / Bazzite)
 find_package(ECM REQUIRED NO_MODULE PATHS /usr/share/ECM/cmake)
 list(APPEND CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
-find_package(KF6 REQUIRED COMPONENTS WindowSystem)
+find_package(KF6 REQUIRED COMPONENTS WindowSystem GlobalAccel)
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 find_package(LayerShellQt CONFIG REQUIRED)
 
@@ -45,6 +45,7 @@ add_executable(a-ice
 
 target_link_libraries(a-ice
     KF6::WindowSystem
+    KF6::GlobalAccel
     LayerShellQt::Interface
     Qt6::Widgets
     Qt6::Network

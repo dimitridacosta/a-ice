@@ -283,9 +283,14 @@ void ChatWidget::updateBlurRegion()
         return;
     m_lastRegion = region;
 
-    // Pas de setMask : il provoque un re-reshape de la fenêtre à chaque update
-    // → clignotement. La fenêtre reste transparente hors des bulles ; les clics
-    // dans la colonne sont captés (compromis acceptable pour la stabilité).
+    // Input region (click-through) : on set le mask sur le QWindow natif,
+    // PAS sur le QWidget. Sous Wayland, QWindow::setMask() definit
+    // l input region du surface (wl_surface_set_input_region) : seuls les
+    // pixels dans la region captent les clics, le reste passe aux fenetres
+    // derriere. Contrairement a QWidget::setMask(), pas de re-reshape
+    // visible donc pas de clignotement. Indispensable en LayerTop pour ne
+    // pas capturer les clics sur le panel KDE dans les zones sans bulle.
+    win->setMask(region);
     KWindowEffects::enableBlurBehind(win, true, region);
 
     // CRUCIAL : enableBlurBehind ne commit pas la surface Wayland. KWin n'applique
@@ -424,12 +429,17 @@ void ChatWidget::resetConversation()
     if (m_registry) m_registry->cancelAll();
 
     // Retire toutes les bulles de la zone de messages.
+    // NB : le layout a un stretch en index 0 (insertStretch(0,1)) pour
+    // empiler les bulles en bas. takeAt(0) le retire aussi -> il faut le
+    // re-inserer apres, sinon la prochaine bulle s'etire en pleine page
+    // (plus de poussee vers le bas). Bug vu par Dim apres /new.
     QLayoutItem *item;
     while ((item = m_messagesLayout->takeAt(0)) != nullptr) {
         if (QWidget *w = item->widget())
             w->deleteLater();
         delete item;
     }
+    m_messagesLayout->insertStretch(0, 1);  // stretch du haut (empile en bas)
 
     // Reset l'etat API + UI.
     m_messages.clear();
@@ -512,6 +522,14 @@ void ChatWidget::setGenerating(bool generating)
     m_sendButton->style()->polish(m_sendButton);
     m_sendButton->setToolTip(generating ? QStringLiteral("Stop generation")
                                          : QStringLiteral("Send"));
+}
+
+void ChatWidget::refocusPrompt()
+{
+    if (m_promptEdit) {
+        m_promptEdit->setFocus();
+        m_promptEdit->moveCursor(QTextCursor::End);
+    }
 }
 
 void ChatWidget::onSendMessage(const QString &text)
