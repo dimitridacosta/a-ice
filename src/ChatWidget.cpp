@@ -570,21 +570,36 @@ void ChatWidget::onSummaryReady(const QString &summary)
     // par le résumé (le contexte est compacté).
     const QString ctx = QStringLiteral(
         "## Conversation context (compacted summary)\n\n") + summary.trimmed();
+
+    // Sauvegarde au cas où le résumé ne réduirait pas (on restaurera).
+    const QList<ChatMessage> savedMessages = m_messages;
+    const QString savedSummary = m_client->contextSummary();
+    const int avant = m_lastCompactTokensAvant;
+
     m_client->setContextSummary(ctx);
-    const int nb = m_messages.size();
     m_messages.clear();
     const int apres = m_client->estimateContextTokens(m_messages);  // SOUL + tools + résumé
+    const int nb = savedMessages.size();
 
-    QString recap = QStringLiteral("✓ Contexte compacté (%1 messages → résumé).").arg(nb);
-    if (m_lastCompactTokensAvant > 0 && apres < m_lastCompactTokensAvant) {
-        const int gagne = m_lastCompactTokensAvant - apres;
-        const double pct = gagne * 100.0 / m_lastCompactTokensAvant;
+    // Garde : si le résumé ne réduit PAS le contexte, on annule — on ne va pas
+    // ajouter du contexte pour rien, on garde l'historique intact.
+    if (avant > 0 && apres >= avant) {
+        m_messages = savedMessages;
+        m_client->setContextSummary(savedSummary);
+        m_lastCompactTokensAvant = -1;
+        showSystemNote(QStringLiteral("✗ Résumé trop long (pas de réduction : ~%1 → ~%2 tokens) — compaction annulée, historique conservé.")
+                           .arg(avant).arg(apres));
+        qInfo() << "[a-ice] compaction annulée : résumé trop long" << avant << "->" << apres;
+        return;
+    }
+
+    QString recap = QStringLiteral("✓ Contexte compacté (%1 messages → résumé en system).").arg(nb);
+    if (avant > 0 && apres < avant) {
+        const int gagne = avant - apres;
+        const double pct = gagne * 100.0 / avant;
         recap += QStringLiteral("  ~%1 → ~%2 tokens (−%3, %4% gagné).")
-                     .arg(m_lastCompactTokensAvant).arg(apres).arg(gagne)
+                     .arg(avant).arg(apres).arg(gagne)
                      .arg(QString::number(pct, 'f', 0));
-    } else if (m_lastCompactTokensAvant > 0) {
-        recap += QStringLiteral("  ⚠ ~%1 → ~%2 tokens (pas de réduction — résumé trop long ?)")
-                     .arg(m_lastCompactTokensAvant).arg(apres);
     }
     m_lastCompactTokensAvant = -1;
     recap += QStringLiteral("\n\n%1").arg(summary.trimmed());
@@ -618,7 +633,10 @@ void ChatWidget::showContextInfo()
     s += QStringLiteral("- `%1`\n").arg(mdl.stream ? QStringLiteral("stream") : QStringLiteral("no stream"));
     s += QStringLiteral("- sortie max `%1`\n\n").arg(loc.toString(mdl.maxTokens));
     s += QStringLiteral("**Contexte** — ~%1 tokens\\\n").arg(loc.toString(tokens));
-    s += QStringLiteral("system + %1 messages (estimé chars/4)\n\n").arg(nMsg);
+    if (nMsg == 0 && !m_client->contextSummary().isEmpty())
+        s += QStringLiteral("system seul (résumé compacté)\\\n\n");
+    else
+        s += QStringLiteral("system + %1 messages (estimé chars/4)\\\n\n").arg(nMsg);
 
     if (mdl.contextWindow > 0) {
         const double pct = tokens * 100.0 / mdl.contextWindow;
