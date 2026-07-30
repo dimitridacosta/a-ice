@@ -103,6 +103,11 @@ int LlamaClient::estimateContextTokens(const QList<ChatMessage> &messages) const
             sys += QStringLiteral("\n\n");
         sys += m_contextSummary;
     }
+    if (!m_timeContext.isEmpty()) {
+        if (!sys.trimmed().isEmpty())
+            sys += QStringLiteral("\n\n");
+        sys += m_timeContext;
+    }
     int chars = sys.size();
     for (const auto &msg : messages) {
         chars += msg.role.size() + 4;   // "role": ... overhead
@@ -111,6 +116,30 @@ int LlamaClient::estimateContextTokens(const QList<ChatMessage> &messages) const
             chars += tc.name.size() + tc.arguments.size() + 16;  // id + structure
     }
     return chars / 4;  // heuristique 1 token ≈ 4 chars
+}
+
+void LlamaClient::refreshTimeContext()
+{
+    // Met à jour le contexte temporel seulement si : premier envoi, jour
+    // changé, ou > 15 min depuis le dernier rappel. Minimise les tokens :
+    // - premier / jour changé : date + heure (contexte initial complet).
+    // - sinon : juste l'heure.
+    const QDateTime now = QDateTime::currentDateTime();
+    const bool firstReminder = !m_lastTimeReminder.isValid();
+    const bool dayChanged = !firstReminder && (now.date() != m_lastTimeReminder.date());
+    const bool stale = firstReminder || dayChanged
+        || (now > m_lastTimeReminder.addSecs(15 * 60));
+    if (!stale)
+        return;  // < 15 min, même jour : on garde l'ancien contexte (tokens min).
+    if (firstReminder || dayChanged) {
+        m_timeContext = QStringLiteral("Current date: %1, time: %2")
+            .arg(now.toString(QStringLiteral("yyyy-MM-dd")),
+                 now.toString(QStringLiteral("HH:mm")));
+    } else {
+        m_timeContext = QStringLiteral("Current time: %1")
+            .arg(now.toString(QStringLiteral("HH:mm")));
+    }
+    m_lastTimeReminder = now;
 }
 
 void LlamaClient::requestSummary(const QList<ChatMessage> &messages)
@@ -162,6 +191,15 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
             if (!sys.trimmed().isEmpty())
                 sys += QStringLiteral("\n\n");
             sys += m_contextSummary;
+        }
+        // Contexte temporel (date/heure) : rafraîchi toutes les 15 min max,
+        // juste l'heure (date si le jour a changé). Minimise les tokens tout
+        // en gardant le modèle au courant du temps qui passe.
+        refreshTimeContext();
+        if (!m_timeContext.isEmpty()) {
+            if (!sys.trimmed().isEmpty())
+                sys += QStringLiteral("\n\n");
+            sys += m_timeContext;
         }
     }
     if (!sys.trimmed().isEmpty()) {

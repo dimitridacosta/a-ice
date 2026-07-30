@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QDateTime>
 #include <QNetworkReply>
 #include <QString>
 #include <QList>
@@ -64,6 +65,12 @@ public:
     /// pour l'aperçu /context, pas une mesure exacte.
     int estimateContextTokens(const QList<ChatMessage> &messages) const;
 
+    /// Met à jour le contexte temporel (date/heure) injecté en system prompt,
+    /// mais seulement si > 15 min depuis le dernier rappel (ou jour changé, ou
+    /// premier envoi). Minimise les tokens : juste l'heure, date si le jour a
+    /// changé. Évite de réinjecter l'heure à chaque message.
+    void refreshTimeContext();
+
 signals:
     /// Morceau de raisonnement (modèles thinking type Qwen3).
     void thinkingChunk(const QString &text);
@@ -105,6 +112,8 @@ private:
     bool m_inThinkingContent = false;
     bool m_summarizing = false;     // mode compaction : non-stream, émet summaryReady
     QString m_contextSummary;      // résumé compacté injecté en system prompt
+    QDateTime m_lastTimeReminder;   // dernier rappel date/heure (anti-réinjection < 15min)
+    QString m_timeContext;          // contexte temporel courant injecté en system
 
     // Buffer SSE : les chunks peuvent arriver coupés au milieu d'une ligne.
     QByteArray m_sseBuffer;
