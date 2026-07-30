@@ -768,6 +768,10 @@ void ChatWidget::onResponseComplete()
     m_interruptRequested = false;
 
     emit messageReceived(assistantMsg.content);
+    // S'assure d'être tout en bas à la fin du message : le dernier chunk a
+    // scrollé, mais le rendu markdown final peut encore ajuster la hauteur de
+    // la bulle, sinon le scroll reste à l'ancienne position (milieu de bulle).
+    scrollToBottom();
     scheduleBlurUpdate();
 }
 
@@ -1060,6 +1064,12 @@ void ChatWidget::scrollToBottom()
     const int contentH = qMax(m_scrollArea->viewport()->height(),
                               m_messagesContainer->sizeHint().height());
     m_messagesContainer->resize(vpW, contentH);
+    // Ceinture-bretelle : force le QScrollArea à recalculer sa scrollbar
+    // (updateScrollBars) synchrone au cas où le resize n'aurait pas suffi -
+    // sinon le maximum reste en retard et le scroll s'arrête au milieu de la
+    // dernière bulle.
+    QEvent lr(QEvent::LayoutRequest);
+    QCoreApplication::sendEvent(m_scrollArea, &lr);
     QScrollBar *bar = m_scrollArea->verticalScrollBar();
     bar->setValue(bar->maximum());
 }
