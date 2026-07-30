@@ -70,6 +70,7 @@ private slots:
     void onToolCallsReady(const QList<ToolCall> &calls, const QString &assistantContent);
     void onThinkingUpdated(const QString &cleanedThinking);
     void onScrollChanged();
+    void onScrollMoved();  // scroll : recalcul blur synchrone (anti-décalage)
 
 private:
     void setupUI();
@@ -113,7 +114,10 @@ private:
     void clearWaitingBlock();
 
     /// Recalcule et applique la region blur KWin (union bulles + barre).
-    void updateBlurRegion();
+    /// Si forceRepaint=false, ne force pas le repaint synchrone (le caller
+    /// se charge de repeindre via update()), utile pendant le scroll pour
+    /// synchroniser ombres + blur à la même frame sans surcharger.
+    void updateBlurRegion(bool forceRepaint = true);
     /// Re-planifie un recalcul de blur (throttled).
     void scheduleBlurUpdate();
 

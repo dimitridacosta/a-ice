@@ -81,8 +81,10 @@ ChatWidget::ChatWidget(QWidget *parent)
     setupGlass();
 
     m_blurTimer.setSingleShot(true);
-    m_blurTimer.setInterval(80);
-    connect(&m_blurTimer, &QTimer::timeout, this, &ChatWidget::updateBlurRegion);
+    // Throttle court (1 frame ~16ms) : le blur suit le contenu frame par frame.
+    // L'ancien 80ms laissait le blur en retard sur les bulles (décalage visible).
+    m_blurTimer.setInterval(16);
+    connect(&m_blurTimer, &QTimer::timeout, this, [this]() { updateBlurRegion(true); });
 }
 
 ChatWidget::~ChatWidget() = default;
@@ -135,11 +137,11 @@ void ChatWidget::setupUI()
 
     // Le scroll déplace les bulles en coordonnées fenêtre → il faut recalculer
     // la region blur pour qu'elle suive le contenu (sinon décalage blur/contenu).
-    // On en profite pour gérer l'auto-scroll : on suit la génération tant que
-    // l'utilisateur reste en bas ; s'il remonte, on désactive le suivi pour ne
-    // pas le renvoyer en bas à chaque chunk.
+    // On recalcule le blur SYNCHRONE au scroll (pas de throttle) pour qu'il
+    // colle au contenu frame par frame : l'ancien throttle laissait le blur ~80ms
+    // en arrière des bulles, d'où le décalage visible pendant le scroll.
     connect(m_scrollArea->verticalScrollBar(), &QAbstractSlider::valueChanged,
-            this, &ChatWidget::scheduleBlurUpdate);
+            this, &ChatWidget::onScrollMoved);
     connect(m_scrollArea->verticalScrollBar(), &QAbstractSlider::valueChanged,
             this, &ChatWidget::onScrollChanged);
 
@@ -245,7 +247,7 @@ void ChatWidget::scheduleBlurUpdate()
     if (!m_blurTimer.isActive()) m_blurTimer.start();
 }
 
-void ChatWidget::updateBlurRegion()
+void ChatWidget::updateBlurRegion(bool forceRepaint)
 {
     // Blur KWin + masque de clic appliqués UNIQUEMENT derrière les éléments
     // visibles (barre + chaque bulle). La fenêtre elle-même reste totalement
@@ -254,7 +256,7 @@ void ChatWidget::updateBlurRegion()
     QWindow *win = window()->windowHandle();
     if (!win) {
         if (isVisible())
-            QTimer::singleShot(100, this, &ChatWidget::updateBlurRegion);
+            QTimer::singleShot(100, this, [this]() { updateBlurRegion(true); });
         return;
     }
 
@@ -302,7 +304,11 @@ void ChatWidget::updateBlurRegion()
     // le nouveau blur qu'au prochain repaint de la fenêtre (d'où l'effet « bouger
     // la souris / ouvrir le menu KDE pour que ça se redessine »). On force donc un
     // repaint immédiat pour committer la surface et déclencher le re-render du blur.
-    if (auto *top = window()) top->repaint();
+    // Au scroll, on saute ce repaint synchrone (forceRepaint=false) : le caller
+    // programme un update() coalescé à la frame suivante, ce qui commit le blur
+    // sans surcharger (pas de repaint synchrone par event de scroll).
+    if (forceRepaint)
+        if (auto *top = window()) top->repaint();
 }
 
 void ChatWidget::paintEvent(QPaintEvent *e)
@@ -1052,6 +1058,18 @@ void ChatWidget::onScrollChanged()
     // programme (value = maximum → reste activé), pas de boucle.
     QScrollBar *bar = m_scrollArea->verticalScrollBar();
     m_autoScroll = (bar->value() >= bar->maximum() - 4);
+}
+
+void ChatWidget::onScrollMoved()
+{
+    // Le scroll déplace les bulles en coords fenêtre. On recalcule la region
+    // blur SYNCHRONE (setMask + enableBlurBehind) pour qu'elle suive le
+    // contenu sans attendre le throttle — sinon le blur reste en retard des
+    // bulles (décalage visible). Pas de repaint synchrone ici (forceRepaint=
+    // false) : on laisse update() coalescer le repaint à la frame suivante,
+    // ce qui synchronise ombres + commit blur Wayland à la même frame.
+    updateBlurRegion(false);
+    update();
 }
 
 bool ChatWidget::eventFilter(QObject *watched, QEvent *event)
