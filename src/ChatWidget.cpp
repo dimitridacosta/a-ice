@@ -135,8 +135,13 @@ void ChatWidget::setupUI()
 
     // Le scroll déplace les bulles en coordonnées fenêtre → il faut recalculer
     // la region blur pour qu'elle suive le contenu (sinon décalage blur/contenu).
+    // On en profite pour gérer l'auto-scroll : on suit la génération tant que
+    // l'utilisateur reste en bas ; s'il remonte, on désactive le suivi pour ne
+    // pas le renvoyer en bas à chaque chunk.
     connect(m_scrollArea->verticalScrollBar(), &QAbstractSlider::valueChanged,
             this, &ChatWidget::scheduleBlurUpdate);
+    connect(m_scrollArea->verticalScrollBar(), &QAbstractSlider::valueChanged,
+            this, &ChatWidget::onScrollChanged);
 
     root->addWidget(m_scrollArea, 1);
 
@@ -561,6 +566,7 @@ void ChatWidget::resetConversation()
     m_toolCallInProgressName.clear();
     m_sessionApprovedPatterns.clear();  // nouvelle conversation = nouveaux approvals
     m_isTyping = false;
+    m_autoScroll = true;  // nouvelle conversation = on suit a nouveau
     setGenerating(false);
 
     scheduleBlurUpdate();
@@ -653,6 +659,7 @@ void ChatWidget::onSendMessage(const QString &text)
 
     // Prépare la bulle assistant (gauche, réflexion en direct).
     m_isTyping = true;
+    m_autoScroll = true;  // l'utilisateur vient d'envoyer → on suit la réponse
     m_toolIterations = 0;
     m_interruptRequested = false;
     setGenerating(true);
@@ -1028,8 +1035,23 @@ void ChatWidget::onRequestError(const QString &error)
 
 void ChatWidget::scrollToBottom()
 {
+    // Auto-scroll conditionnel : on ne colle au bas que si l'utilisateur est
+    // déjà en bas (m_autoScroll). S'il a remonté pendant la génération, on le
+    // laisse lire tranquillement sans le renvoyer en bas à chaque chunk.
+    if (!m_autoScroll)
+        return;
     QScrollBar *bar = m_scrollArea->verticalScrollBar();
     bar->setValue(bar->maximum());
+}
+
+void ChatWidget::onScrollChanged()
+{
+    // Suivi de l'auto-scroll : si l'utilisateur est (revient) en bas, on
+    // réactive le suivi ; s'il remonte, on le désactive. Tolérance de 4 px
+    // (arrondis / step de la scrollbar). scrollToBottom() se charge du cas
+    // programme (value = maximum → reste activé), pas de boucle.
+    QScrollBar *bar = m_scrollArea->verticalScrollBar();
+    m_autoScroll = (bar->value() >= bar->maximum() - 4);
 }
 
 bool ChatWidget::eventFilter(QObject *watched, QEvent *event)
