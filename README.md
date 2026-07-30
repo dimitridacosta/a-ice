@@ -127,6 +127,20 @@ sans relancer l'app :
 
 La sélection est repoussée au client (`model` + `api_url`) au prochain envoi.
 
+### Compaction du contexte (`/compact`)
+
+Quand la conversation s'allonge, `/compact` demande au LLM de produire un
+**résumé structuré** du contexte (objectifs, décisions/faits clés, derniers
+échanges, points en suspens), puis :
+
+1. injecte ce résumé en **system prompt, après le SOUL** (comme contexte
+   accumulé) pour les prochains messages ;
+2. **remplace l'historique** par le résumé (le contexte est compacté).
+
+Le fil naturel est préservé : le prompt de compaction exige la capture précise
+ des derniers échanges et des identifiants exacts (chemins, commandes, config,
+ nombres). `/new` repart de zéro et abandonne le résumé compacté.
+
 ### SOUL.md — personnalité de l'agent
 
 A-ICE lit en plus un fichier **SOUL.md** (Markdown texte brut) dont le contenu
@@ -170,6 +184,7 @@ $EDITOR ~/.config/a-ice/SOUL.md
 - [x] Function calling (tools) — terminal, brave_search, fetch_url
 - [ ] Configuration GUI (adresse serveur, température, tokens max)
 - [x] Support multi-modèle (commande /model)
+- [x] Compaction du contexte (commande /compact)
 - [x] Icône personnalisée
 - [ ] Gestion du contexte (conversation longue)
 

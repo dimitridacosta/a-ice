@@ -39,6 +39,11 @@ QRegion roundedRegion(const QRect &r, int radius)
     return QRegion(poly.toPolygon());
 }
 
+// Prompt de compaction du contexte (commande /compact). Demande au LLM un
+// résumé structuré de la conversation pour que l'agent continue sans perdre le
+// fil ni les détails précis des derniers échanges. Le résumé est réinjecté en
+// system prompt (après le SOUL) au début de la conversation suivante.
+
 // Barre de prompt : peinte sur la fenêtre parente (ombre non clippée).
 class GlassBar : public QFrame
 {
@@ -74,6 +79,25 @@ private:
 //  alignement parfait et un chevauchement libre.)
 } // namespace
 
+const QString kCompactPrompt = QStringLiteral(
+    "You are a context-compaction assistant. Produce a concise but complete "
+    "summary of the conversation so far, so the main assistant can continue "
+    "without losing the thread or any important detail.\n\n"
+    "Output a structured summary with these sections:\n"
+    "- **Goals & state**: what the user is trying to achieve, current progress, "
+    "what is done and what is pending.\n"
+    "- **Key decisions & facts**: decisions made, constraints, preferences, "
+    "names, file paths, commands, code, config keys, numbers, URLs — preserve "
+    "exact identifiers verbatim.\n"
+    "- **Recent context**: the last few exchanges, captured precisely enough to "
+    "keep the conversation flowing naturally — include the most recent user "
+    "request and the assistant's latest answer.\n"
+    "- **Open questions / next steps**: anything awaiting resolution.\n\n"
+    "Rules:\n"
+    "- Be precise and factual; do not invent or guess.\n"
+    "- Prefer tight bullet points. Keep it complete but as short as possible.\n"
+    "- Output ONLY the summary, no preamble, no commentary.");
+
 ChatWidget::ChatWidget(QWidget *parent)
     : QWidget(parent)
 {
@@ -101,6 +125,8 @@ void ChatWidget::setupUI()
             this, &ChatWidget::onThinkingUpdated);
     connect(m_client.data(), &LlamaClient::requestError,
             this, &ChatWidget::onRequestError);
+    connect(m_client.data(), &LlamaClient::summaryReady,
+            this, &ChatWidget::onSummaryReady);
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -446,6 +472,84 @@ bool ChatWidget::switchModelCommand(const QString &aliasOrName)
     return ok;
 }
 
+void ChatWidget::showSystemNote(const QString &text)
+{
+    // Bulle système : une carte assistant avec un content block statique (pas
+    // de streaming, pas de waiting block).
+    if (!m_currentBubble) startAssistantBubble();
+    clearWaitingBlock();
+    if (m_currentBubble) {
+        auto *cb = m_currentBubble->addContentBlock();
+        cb->set(text);
+    }
+    m_currentBubble = nullptr;
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
+    m_waitingBlock   = nullptr;
+    scheduleBlurUpdate();
+}
+
+void ChatWidget::compactConversation()
+{
+    if (m_isTyping) {
+        showSystemNote(QStringLiteral("✗ Compaction impossible pendant la génération."));
+        return;
+    }
+    if (m_messages.isEmpty()) {
+        showSystemNote(QStringLiteral("✗ Rien à compacter : la conversation est vide."));
+        return;
+    }
+
+    // Formatte l'historique (sauf system) pour le LLM.
+    QString conv;
+    for (const auto &msg : m_messages) {
+        if (msg.role == QLatin1String("system")) continue;
+        QString label;
+        if (msg.role == QLatin1String("user")) label = QStringLiteral("User");
+        else if (msg.role == QLatin1String("assistant")) label = QStringLiteral("Assistant");
+        else if (msg.role == QLatin1String("tool")) label = QStringLiteral("Tool result");
+        else label = msg.role;
+        conv += label + QStringLiteral(": ") + msg.content + QStringLiteral("\n\n");
+    }
+    conv = conv.trimmed();
+    if (conv.isEmpty()) {
+        showSystemNote(QStringLiteral("✗ Rien à compacter : aucun message utilisateur/assistant."));
+        return;
+    }
+
+    const int nbAvant = m_messages.size();
+    showSystemNote(QStringLiteral("⏳ Compaction du contexte (%1 messages)…").arg(nbAvant));
+
+    // Requête de résumé : [system = prompt de compaction, user = conversation].
+    QList<ChatMessage> req;
+    ChatMessage sysMsg;
+    sysMsg.role = QStringLiteral("system");
+    sysMsg.content = kCompactPrompt;
+    ChatMessage userMsg;
+    userMsg.role = QStringLiteral("user");
+    userMsg.content = QStringLiteral("Here is the conversation to summarize:\n\n") + conv;
+    req.append(sysMsg);
+    req.append(userMsg);
+
+    m_client->requestSummary(req);
+}
+
+void ChatWidget::onSummaryReady(const QString &summary)
+{
+    // Le LLM a produit un résumé du contexte. On l'injecte en system prompt
+    // (après le SOUL) pour les prochains messages, et on remplace l'historique
+    // par le résumé (le contexte est compacté).
+    const QString ctx = QStringLiteral(
+        "## Conversation context (compacted summary)\n\n") + summary.trimmed();
+    m_client->setContextSummary(ctx);
+    const int nb = m_messages.size();
+    m_messages.clear();
+    showSystemNote(QStringLiteral("✓ Contexte compacté (%1 messages → résumé injecté comme contexte).\n\n%2")
+                       .arg(nb).arg(summary.trimmed()));
+    qInfo() << "[a-ice] contexte compacté :" << nb << "messages -> résumé" << ctx.size() << "chars";
+}
+
 void ChatWidget::onSendClicked()
 {
     QString text = m_promptEdit->toPlainText().trimmed();
@@ -524,6 +628,10 @@ bool ChatWidget::handleSlashCommand(const QString &text)
         scheduleBlurUpdate();
         return true;
     }
+    if (cmd == QLatin1String("/compact")) {
+        compactConversation();
+        return true;
+    }
     if (cmd == QLatin1String("/help") || cmd == QLatin1String("/commands")) {
         // Affiche l'aide dans une carte systeme (style erreur, mais informatif).
         if (!m_currentBubble) startAssistantBubble();
@@ -534,6 +642,7 @@ bool ChatWidget::handleSlashCommand(const QString &text)
                 "- /new  (ou /clear) : reinitialise la conversation\n"
                 "- /model [alias|nom] : bascule de modele a la volee\n"
                 "- /models : liste les modeles disponibles\n"
+                "- /compact : compacte le contexte (résumé injecté)\n"
                 "- /help : affiche cette aide"));
         }
         m_currentBubble = nullptr;
@@ -583,6 +692,8 @@ void ChatWidget::resetConversation()
     m_sessionApprovedPatterns.clear();  // nouvelle conversation = nouveaux approvals
     m_isTyping = false;
     m_autoScroll = true;  // nouvelle conversation = on suit a nouveau
+    // /new : on repart de zéro, on abandonne aussi le contexte compacté.
+    m_client->setContextSummary(QString());
     setGenerating(false);
 
     scheduleBlurUpdate();

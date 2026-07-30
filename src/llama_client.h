@@ -48,6 +48,15 @@ public:
     void sendMessages(const QList<ChatMessage> &messages);
     void cancel();
 
+    /// Demande une compaction du contexte : envoie `messages` (typiquement
+    /// [system=prompt de compaction, user=conversation à résumer]) en mode
+    /// non-stream, SANS le SOUL/tools/contextSummary, et émet summaryReady()
+    /// avec le résumé produit. Utilisé par /compact.
+    void requestSummary(const QList<ChatMessage> &messages);
+    /// Résumé de contexte compacté à injecter en system prompt (après le SOUL)
+    /// pour les requêtes normales. Vide = pas de contexte compacté.
+    void setContextSummary(const QString &s) { m_contextSummary = s; }
+
 signals:
     /// Morceau de raisonnement (modèles thinking type Qwen3).
     void thinkingChunk(const QString &text);
@@ -63,6 +72,8 @@ signals:
     void thinkingUpdated(const QString &cleanedThinking);
     /// Erreur réseau / HTTP / parsing.
     void requestError(const QString &error);
+    /// Résumé de contexte produit par requestSummary() (commande /compact).
+    void summaryReady(const QString &summary);
 
 private:
     void makeRequest(const QList<ChatMessage> &messages);
@@ -85,6 +96,8 @@ private:
     QNetworkReply *m_currentReply = nullptr;
     bool m_isRequesting = false;
     bool m_inThinkingContent = false;
+    bool m_summarizing = false;     // mode compaction : non-stream, émet summaryReady
+    QString m_contextSummary;      // résumé compacté injecté en system prompt
 
     // Buffer SSE : les chunks peuvent arriver coupés au milieu d'une ligne.
     QByteArray m_sseBuffer;

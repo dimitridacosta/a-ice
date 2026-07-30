@@ -71,6 +71,7 @@ private slots:
     void onThinkingUpdated(const QString &cleanedThinking);
     void onScrollChanged();
     void onScrollMoved();  // scroll : recalcul blur synchrone (anti-décalage)
+    void onSummaryReady(const QString &summary);  // /compact : résumé reçu
 
 private:
     void setupUI();
@@ -105,6 +106,15 @@ private:
     /// un retour utilisateur (succès/échec) dans une bulle système et pousse la
     /// nouvelle config au client. Retourne true si le switch a réussi.
     bool switchModelCommand(const QString &aliasOrName);
+
+    /// Demande au LLM un résumé du contexte courant (commande /compact) : envoie
+    /// le prompt de compaction + l'historique, puis injecte le résumé en
+    /// system prompt (après le SOUL) et remplace l'historique par le résumé.
+    void compactConversation();
+
+    /// Affiche une note système (bulle assistant avec un content block, pas de
+    /// streaming) — utilisé par /compact pour le retour compaction.
+    void showSystemNote(const QString &text);
 
     /// Reinitialise la conversation : historique API, bulles, etat des blocs,
     /// approvals session. Utilise par /new.

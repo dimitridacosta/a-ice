@@ -77,11 +77,32 @@ void LlamaClient::cancel()
         }
     }
     m_isRequesting = false;
+    m_summarizing = false;
     m_sseBuffer.clear();
     m_pendingToolCalls.clear();
     m_pendingAssistantContent.clear();
     m_streamedReasoning.clear();
     m_streamedContent.clear();
+}
+
+void LlamaClient::requestSummary(const QList<ChatMessage> &messages)
+{
+    // Compaction de contexte : requête non-stream, sans SOUL/tools/contextSummary
+    // (le caller fournit le prompt de compaction en system). Le résumé produit
+    // est retourné via summaryReady().
+    if (m_isRequesting) {
+        emit requestError(QStringLiteral("Déjà en cours..."));
+        return;
+    }
+    m_isRequesting = true;
+    m_summarizing = true;
+    m_sseBuffer.clear();
+    m_inThinkingContent = false;
+    m_pendingToolCalls.clear();
+    m_pendingAssistantContent.clear();
+    m_streamedReasoning.clear();
+    m_streamedContent.clear();
+    makeRequest(messages);
 }
 
 void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
@@ -93,13 +114,26 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
     // Si des tools sont déclarés, on enrichit le system prompt avec leur
     // description (fallback quand le chat template du GGUF ne gère pas le
     // champ `tools` du payload OpenAI — c'est le cas de qwen36-28b-reap).
-    QString sys = m_config.systemPrompt();
-    if (!m_tools.isEmpty()) {
-        QString toolsPrompt = buildToolsSystemPrompt();
-        if (!toolsPrompt.isEmpty()) {
+    // En mode compaction (requestSummary), on saute SOUL+tools+contextSummary :
+    // le caller fournit le prompt de compaction en system.
+    QString sys;
+    if (!m_summarizing) {
+        sys = m_config.systemPrompt();
+        if (!m_tools.isEmpty()) {
+            QString toolsPrompt = buildToolsSystemPrompt();
+            if (!toolsPrompt.isEmpty()) {
+                if (!sys.trimmed().isEmpty())
+                    sys += QStringLiteral("\n\n");
+                sys += toolsPrompt;
+            }
+        }
+        // Contexte compacté (/compact) injecté APRÈS le SOUL — c'est le résumé
+        // de la conversation précédente, réinjecté comme contexte au début de
+        // chaque nouvelle phase pour ne pas perdre le fil.
+        if (!m_contextSummary.isEmpty()) {
             if (!sys.trimmed().isEmpty())
                 sys += QStringLiteral("\n\n");
-            sys += toolsPrompt;
+            sys += m_contextSummary;
         }
     }
     if (!sys.trimmed().isEmpty()) {
@@ -117,10 +151,12 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
     json["model"] = m_config.model().name;
     json["temperature"] = m_config.model().temperature;
     json["max_tokens"] = m_config.model().maxTokens;
-    json["stream"] = m_config.model().stream;
+    const bool stream = m_summarizing ? false : m_config.model().stream;
+    json["stream"] = stream;
 
-    // Function calling : on injecte les tools si présents.
-    if (!m_tools.isEmpty()) {
+    // Function calling : on injecte les tools si présents (pas en mode
+    // compaction : requête de résumé pur, sans tools).
+    if (!m_summarizing && !m_tools.isEmpty()) {
         json["tools"] = m_tools;
         json["tool_choice"] = QStringLiteral("auto");
     }
@@ -142,13 +178,14 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
     }
 
     QByteArray jsonStr = QJsonDocument(json).toJson(QJsonDocument::Compact);
-    qInfo() << "[a-ice] → POST" << url << "(stream=" << m_config.model().stream
-            << "tools=" << m_tools.size() << ")";
+    qInfo() << "[a-ice] → POST" << url << "(stream=" << stream
+            << "tools=" << m_tools.size()
+            << (m_summarizing ? " [compaction]" : "") << ")";
     qInfo().noquote() << "[a-ice] payload:" << jsonStr;
 
     m_currentReply = m_nam->post(qnaRequest, jsonStr);
 
-    if (m_config.model().stream) {
+    if (stream) {
         connect(m_currentReply, &QIODevice::readyRead, this, [this]() {
             if (!m_currentReply) return;
             parseSseChunk(m_currentReply->readAll());
@@ -237,6 +274,7 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
             m_currentReply->deleteLater();
             m_currentReply = nullptr;
             m_isRequesting = false;
+            m_summarizing = false;  // au cas où la compaction aurait échoué
 
             if (err == QNetworkReply::OperationCanceledError) {
                 // Annulation.
@@ -247,7 +285,12 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
             } else {
                 QList<ToolCall> toolCalls;
                 QString text = parseChatCompletion(body, &toolCalls);
-                if (text.isNull() && toolCalls.isEmpty()) {
+                if (m_summarizing) {
+                    // Mode compaction : on renvoie le résumé produit (sans
+                    // l'afficher comme un tour de chat).
+                    m_summarizing = false;
+                    emit summaryReady(text);
+                } else if (text.isNull() && toolCalls.isEmpty()) {
                     emit requestError(QStringLiteral("Réponse invalide: %1").arg(QString::fromUtf8(body)));
                 } else if (!toolCalls.isEmpty()) {
                     qInfo() << "[a-ice] ←" << toolCalls.size() << "tool_calls natifs reçus";
