@@ -65,10 +65,12 @@ public:
     /// pour l'aperçu /context, pas une mesure exacte.
     int estimateContextTokens(const QList<ChatMessage> &messages) const;
 
-    /// Met à jour le contexte temporel (date/heure) injecté en system prompt,
-    /// mais seulement si > 15 min depuis le dernier rappel (ou jour changé, ou
-    /// premier envoi). Minimise les tokens : juste l'heure, date si le jour a
-    /// changé. Évite de réinjecter l'heure à chaque message.
+    /// Met à jour le LOG temporel (date/heure) injecté à la fin du system prompt.
+    /// Cumulatif : à chaque rappel (premier envoi, jour changé, ou > 15 min), on
+    /// AJOUTE une entrée (on ne modifie jamais l'existant). Le début du system ne
+    /// change donc jamais -> cache préservé entre deux rappels ; seule la fin du
+    /// system grandit (recompute de l'historique une fois toutes les 15 min).
+    /// Tokens minimaux : juste l'heure, date si le jour a changé.
     void refreshTimeContext();
 
 signals:
@@ -113,7 +115,7 @@ private:
     bool m_summarizing = false;     // mode compaction : non-stream, émet summaryReady
     QString m_contextSummary;      // résumé compacté injecté en system prompt
     QDateTime m_lastTimeReminder;   // dernier rappel date/heure (anti-réinjection < 15min)
-    QString m_timeContext;          // contexte temporel courant injecté en system
+    QString m_timeLog;              // log temporel cumulé injecté à la fin du system
 
     // Buffer SSE : les chunks peuvent arriver coupés au milieu d'une ligne.
     QByteArray m_sseBuffer;

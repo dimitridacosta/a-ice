@@ -103,11 +103,12 @@ int LlamaClient::estimateContextTokens(const QList<ChatMessage> &messages) const
             sys += QStringLiteral("\n\n");
         sys += m_contextSummary;
     }
+    if (!m_timeLog.isEmpty()) {
+        if (!sys.trimmed().isEmpty())
+            sys += QStringLiteral("\n\n");
+        sys += m_timeLog;
+    }
     int chars = sys.size();
-    // Le time system est injecté comme un message system séparé avant le
-    // dernier user (cf. makeRequest) — on le compte comme un message.
-    if (!m_timeContext.isEmpty())
-        chars += m_timeContext.size() + 8;  // role="system" overhead + content
     for (const auto &msg : messages) {
         chars += msg.role.size() + 4;   // "role": ... overhead
         chars += msg.content.size();
@@ -119,25 +120,23 @@ int LlamaClient::estimateContextTokens(const QList<ChatMessage> &messages) const
 
 void LlamaClient::refreshTimeContext()
 {
-    // Met à jour le contexte temporel seulement si : premier envoi, jour
-    // changé, ou > 15 min depuis le dernier rappel. Minimise les tokens :
-    // - premier / jour changé : date + heure (contexte initial complet).
-    // - sinon : juste l'heure.
+    // LOG temporel cumulatif : à chaque rappel (premier envoi, jour changé, ou
+    // > 15 min), on AJOUTE une entrée au log (on ne modifie jamais l'existant).
+    // Le début du system ne change jamais -> cache préservé entre deux rappels.
+    // Tokens minimaux : juste l'heure ; date si le jour a changé.
     const QDateTime now = QDateTime::currentDateTime();
     const bool firstReminder = !m_lastTimeReminder.isValid();
     const bool dayChanged = !firstReminder && (now.date() != m_lastTimeReminder.date());
     const bool stale = firstReminder || dayChanged
         || (now > m_lastTimeReminder.addSecs(15 * 60));
     if (!stale)
-        return;  // < 15 min, même jour : on garde l'ancien contexte (tokens min).
-    if (firstReminder || dayChanged) {
-        m_timeContext = QStringLiteral("Current date: %1, time: %2")
-            .arg(now.toString(QStringLiteral("yyyy-MM-dd")),
-                 now.toString(QStringLiteral("HH:mm")));
-    } else {
-        m_timeContext = QStringLiteral("Current time: %1")
-            .arg(now.toString(QStringLiteral("HH:mm")));
-    }
+        return;  // < 15 min, même jour : on ne touche pas au log (cache préservé).
+    const QString entry = (firstReminder || dayChanged)
+        ? now.toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+        : now.toString(QStringLiteral("HH:mm"));
+    m_timeLog = m_timeLog.isEmpty()
+        ? QStringLiteral("Times: ") + entry
+        : m_timeLog + QStringLiteral(", ") + entry;
     m_lastTimeReminder = now;
 }
 
@@ -191,11 +190,15 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
                 sys += QStringLiteral("\n\n");
             sys += m_contextSummary;
         }
-        // NB : le contexte temporel (date/heure) n'est PAS dans le system de
-        // tête — il est injecté comme un message system séparé juste avant le
-        // dernier user (cf. boucle ci-dessous) pour préserver le cache de
-        // prompt : le system de tête reste STABLE, seul le time + le dernier
-        // user sont (re)computés.
+        // LOG temporel cumulé : ajouté à la fin du system. Cumulatif (on
+        // ajoute, on ne modifie jamais) -> le début du system ne change pas,
+        // le cache est préservé entre deux rappels (15 min). Rafraîchi ici.
+        refreshTimeContext();
+        if (!m_timeLog.isEmpty()) {
+            if (!sys.trimmed().isEmpty())
+                sys += QStringLiteral("\n\n");
+            sys += m_timeLog;
+        }
     }
     if (!sys.trimmed().isEmpty()) {
         QJsonObject sysObj;
@@ -204,25 +207,8 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
         messagesArray.append(sysObj);
     }
 
-    // Rafraîchit le contexte temporel (toutes les 15 min max). On le PRÉPEND au
-    // content du dernier user (nouveau tour) plutôt que d'injecter un message
-    // system séparé : beaucoup de chat templates (qwen, etc.) ignorent les
-    // messages system au MILIEU de la conversation. Prépendre au user garantit
-    // que le modèle le voit, sans casser le cache (le dernier user est nouveau
-    // à chaque tour, donc jamais caché — son contenu peut changer sans
-    // invalider le prefix system de tête + historique).
-    const bool injectTime = !m_summarizing;
-    if (injectTime)
-        refreshTimeContext();
-    const int nMsg = messages.size();
-    for (int i = 0; i < nMsg; ++i) {
-        QJsonObject obj = messages[i].toJson();
-        if (injectTime && !m_timeContext.isEmpty()
-            && i == nMsg - 1 && messages[i].role == QLatin1String("user")) {
-            const QString prev = obj.value(QStringLiteral("content")).toString();
-            obj["content"] = QStringLiteral("[time] %1\n\n").arg(m_timeContext) + prev;
-        }
-        messagesArray.append(obj);
+    for (const auto &msg : messages) {
+        messagesArray.append(msg.toJson());
     }
 
     json["messages"] = messagesArray;
