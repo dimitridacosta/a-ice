@@ -25,7 +25,7 @@ void LlamaClient::setConfig(const Config &config)
 {
     m_config = config;
     setServerUrl(config.apiUrl());
-    qInfo() << "[a-ice] config: provider=" << m_config.provider().name
+    qInfo() << "[a-ice] config: provider=" << m_config.provider().type
             << "api_url=" << m_config.apiUrl()
             << "model=" << m_config.model().name
             << "temp=" << m_config.model().temperature

@@ -15,7 +15,7 @@
  * {
  *   "providers": {
  *     "local": {
- *       "name": "openai_compatible",
+ *       "type": "openai_compatible",
  *       "api_url": "http://localhost:18081/v1",
  *       "prompt_format": "qwen",
  *       "models": {
@@ -46,7 +46,7 @@
  *
  * Schéma legacy (rétro-compatible, single provider) :
  * {
- *   "provider": { "name", "api_url", "prompt_format" },
+ *   "provider": { "type", "api_url", "prompt_format" },
  *   "model":    { "name", "temperature", "max_tokens", "stream" }
  * }
  * -> reconstruit un provider "default" avec un seul modèle.
@@ -72,7 +72,7 @@ public:
 
     struct Provider {
         QString id;          // ex: "local" (clé dans "providers")
-        QString name;        // ex: "openai_compatible"
+        QString type;        // ex: "openai_compatible" — nature du backend
         QString apiUrl;      // ex: "http://localhost:18081/v1"
         QString promptFormat; // ex: "qwen"
         QList<Model> models;  // ordre du JSON préservé

@@ -1,7 +1,7 @@
 {
   "providers": {
     "local": {
-      "name": "openai_compatible",
+      "type": "openai_compatible",
       "api_url": "http://localhost:18081/v1",
       "prompt_format": "qwen",
       "models": {
@@ -20,7 +20,7 @@
       }
     },
     "cloud": {
-      "name": "openai_compatible",
+      "type": "openai_compatible",
       "api_url": "https://api.exemple.com/v1",
       "prompt_format": "chatml",
       "models": {

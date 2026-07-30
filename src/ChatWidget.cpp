@@ -456,7 +456,7 @@ bool ChatWidget::handleSlashCommand(const QString &text)
         // Liste tous les modèles (par provider), marque le courant.
         QString out;
         for (const auto &p : m_config.providers()) {
-            out += QStringLiteral("[%1] %2\n").arg(p.id, p.name);
+            out += QStringLiteral("[%1] %2\n").arg(p.id, p.type);
             for (const auto &m : p.models) {
                 const bool cur = (p.id == m_config.currentProviderId()
                                   && m.alias == m_config.currentModelAlias());

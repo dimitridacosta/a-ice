@@ -76,7 +76,7 @@ La clé du modèle dans l'objet `models` est son alias.
 {
   "providers": {
     "local": {
-      "name": "openai_compatible",
+      "type": "openai_compatible",
       "api_url": "http://localhost:18081/v1",
       "prompt_format": "qwen",
       "models": {

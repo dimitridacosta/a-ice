@@ -20,7 +20,7 @@ void Config::applyDefaults()
     m_providers.clear();
     Provider p;
     p.id = QStringLiteral("default");
-    p.name = QStringLiteral("openai_compatible");
+    p.type = QStringLiteral("openai_compatible");
     p.apiUrl = QStringLiteral("http://localhost:18081/v1");
     p.promptFormat = QStringLiteral("qwen");
     Model m;
@@ -125,8 +125,11 @@ bool Config::load(const QString &path)
             const QJsonObject po = it.value().toObject();
             Provider p;
             p.id = it.key();
-            if (po.contains(QStringLiteral("name")))
-                p.name = po.value(QStringLiteral("name")).toString();
+            // "type" (nouveau) en priorité, fallback "name" (rétro-compat).
+            if (po.contains(QStringLiteral("type")))
+                p.type = po.value(QStringLiteral("type")).toString();
+            else if (po.contains(QStringLiteral("name")))
+                p.type = po.value(QStringLiteral("name")).toString();
             if (po.contains(QStringLiteral("api_url")))
                 p.apiUrl = po.value(QStringLiteral("api_url")).toString();
             if (po.contains(QStringLiteral("prompt_format")))
@@ -164,10 +167,13 @@ bool Config::load(const QString &path)
         if (!provider.isEmpty() || !model.isEmpty()) {
             Provider p;
             p.id = QStringLiteral("default");
-            if (provider.contains(QStringLiteral("name")))
-                p.name = provider.value(QStringLiteral("name")).toString();
+            // "type" en priorité, fallback "name" (rétro-compat legacy).
+            if (provider.contains(QStringLiteral("type")))
+                p.type = provider.value(QStringLiteral("type")).toString();
+            else if (provider.contains(QStringLiteral("name")))
+                p.type = provider.value(QStringLiteral("name")).toString();
             else
-                p.name = QStringLiteral("openai_compatible");
+                p.type = QStringLiteral("openai_compatible");
             if (provider.contains(QStringLiteral("api_url")))
                 p.apiUrl = provider.value(QStringLiteral("api_url")).toString();
             if (provider.contains(QStringLiteral("prompt_format")))
