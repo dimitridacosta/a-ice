@@ -11,6 +11,7 @@
 #include <QTimer>
 #include <QString>
 #include "ChatMessage.h"
+#include "Config.h"
 
 class Bubble;
 class ThinkingBlock;
@@ -94,9 +95,14 @@ private:
     /// Bascule le bouton entre “envoyer” et “stop” pendant la génération.
     void setGenerating(bool generating);
 
-    /// Intercepte les commandes slash (/new, /help, ...). Retourne true si la
+    /// Intercepte les commandes slash (/new, /help, /model, ...). Retourne true si la
     /// saisie etait une commande (consommee, non envoyee au LLM), false sinon.
     bool handleSlashCommand(const QString &text);
+
+    /// Bascule le modèle courant vers `aliasOrName` (commande /model). Affiche
+    /// un retour utilisateur (succès/échec) dans une bulle système et pousse la
+    /// nouvelle config au client. Retourne true si le switch a réussi.
+    bool switchModelCommand(const QString &aliasOrName);
 
     /// Reinitialise la conversation : historique API, bulles, etat des blocs,
     /// approvals session. Utilise par /new.
@@ -145,4 +151,5 @@ private:
     bool m_toolCallInProgressActive = false;
     QList<ChatMessage> m_messages;
     QSet<QString> m_sessionApprovedPatterns; // dangerous patterns approuvés pour la session
+    Config m_config; // copie de la config (mutable localement pour switchModel)
 };

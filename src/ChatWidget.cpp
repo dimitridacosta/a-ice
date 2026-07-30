@@ -355,8 +355,9 @@ void ChatWidget::setServerUrl(const QString &url)
 
 void ChatWidget::applyConfig(const Config &config)
 {
-    m_client->setConfig(config);
-    setupTools(config);
+    m_config = config;
+    m_client->setConfig(m_config);
+    setupTools(m_config);
 }
 
 void ChatWidget::setupTools(const Config &config)
@@ -373,6 +374,32 @@ void ChatWidget::setupTools(const Config &config)
     m_registry->add(new WebFetchTool(this));
     m_client->setTools(m_registry->toJsonArray());
     qInfo() << "[a-ice] tools registered:" << m_registry->toJsonArray().size();
+}
+
+bool ChatWidget::switchModelCommand(const QString &aliasOrName)
+{
+    QString msg;
+    const bool ok = m_config.switchModel(aliasOrName, &msg);
+    if (ok) {
+        // Pousse la nouvelle sélection (provider + modèle) au client.
+        m_client->setConfig(m_config);
+        msg = QStringLiteral("✓ %1").arg(msg);
+    } else {
+        msg = QStringLiteral("✗ %1").arg(msg);
+    }
+    if (!m_currentBubble) startAssistantBubble();
+    clearWaitingBlock();
+    if (m_currentBubble) {
+        auto *cb = m_currentBubble->addContentBlock();
+        cb->set(msg);
+    }
+    m_currentBubble = nullptr;
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
+    m_waitingBlock   = nullptr;
+    scheduleBlurUpdate();
+    return ok;
 }
 
 void ChatWidget::onSendClicked()
@@ -401,6 +428,58 @@ bool ChatWidget::handleSlashCommand(const QString &text)
         resetConversation();
         return true;
     }
+    if (cmd == QLatin1String("/model")) {
+        if (arg.trimmed().isEmpty()) {
+            // Affiche le modèle courant.
+            const QString cur = QStringLiteral("Modèle courant : %1 (%2) @ %3")
+                .arg(m_config.currentModelAlias(),
+                     m_config.model().name,
+                     m_config.currentProviderId());
+            if (!m_currentBubble) startAssistantBubble();
+            clearWaitingBlock();
+            if (m_currentBubble) {
+                auto *cb = m_currentBubble->addContentBlock();
+                cb->set(cur);
+            }
+            m_currentBubble = nullptr;
+            m_activeThinking = nullptr;
+            m_activeContent  = nullptr;
+            m_activeTool     = nullptr;
+            m_waitingBlock   = nullptr;
+            scheduleBlurUpdate();
+        } else {
+            switchModelCommand(arg);
+        }
+        return true;
+    }
+    if (cmd == QLatin1String("/models")) {
+        // Liste tous les modèles (par provider), marque le courant.
+        QString out;
+        for (const auto &p : m_config.providers()) {
+            out += QStringLiteral("[%1] %2\n").arg(p.id, p.name);
+            for (const auto &m : p.models) {
+                const bool cur = (p.id == m_config.currentProviderId()
+                                  && m.alias == m_config.currentModelAlias());
+                out += QStringLiteral("  %1 %2%3\n")
+                    .arg(cur ? QStringLiteral("*") : QStringLiteral(" "),
+                         m.alias,
+                         m.alias != m.name ? QStringLiteral("  (%1)").arg(m.name) : QString());
+            }
+        }
+        if (!m_currentBubble) startAssistantBubble();
+        clearWaitingBlock();
+        if (m_currentBubble) {
+            auto *cb = m_currentBubble->addContentBlock();
+            cb->set(QStringLiteral("Modèles disponibles :\n") + out.trimmed());
+        }
+        m_currentBubble = nullptr;
+        m_activeThinking = nullptr;
+        m_activeContent  = nullptr;
+        m_activeTool     = nullptr;
+        m_waitingBlock   = nullptr;
+        scheduleBlurUpdate();
+        return true;
+    }
     if (cmd == QLatin1String("/help") || cmd == QLatin1String("/commands")) {
         // Affiche l'aide dans une carte systeme (style erreur, mais informatif).
         if (!m_currentBubble) startAssistantBubble();
@@ -409,6 +488,8 @@ bool ChatWidget::handleSlashCommand(const QString &text)
             auto *cb = m_currentBubble->addContentBlock();
             cb->set(QStringLiteral("Commandes disponibles :\n"
                 "- /new  (ou /clear) : reinitialise la conversation\n"
+                "- /model [alias|nom] : bascule de modele a la volee\n"
+                "- /models : liste les modeles disponibles\n"
                 "- /help : affiche cette aide"));
         }
         m_currentBubble = nullptr;

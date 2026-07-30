@@ -67,19 +67,36 @@ A-ICE lit un fichier de config JSON décrivant le provider et le modèle.
 
 ### Schéma
 
+A-ICE supporte un schéma **multi-providers / multi-modèles** : chaque provider
+(endpoint, prompt_format) contient ses propres modèles. Chaque modèle a un
+**alias** (raccourci pour `/model`) et un **name** (nom réel envoyé à l'API).
+La clé du modèle dans l'objet `models` est son alias.
+
 ```json
 {
-  "provider": {
-    "name": "openai_compatible",
-    "api_url": "http://localhost:18081/v1",
-    "prompt_format": "qwen"
+  "providers": {
+    "local": {
+      "name": "openai_compatible",
+      "api_url": "http://localhost:18081/v1",
+      "prompt_format": "qwen",
+      "models": {
+        "qwen": {
+          "name": "qwen36-28b-reap",
+          "temperature": 0.7,
+          "max_tokens": 65536,
+          "stream": true
+        },
+        "glm": {
+          "name": "glm-5.2",
+          "temperature": 0.7,
+          "max_tokens": 65536,
+          "stream": true
+        }
+      }
+    }
   },
-  "model": {
-    "name": "qwen36-28b-reap",
-    "temperature": 0.7,
-    "max_tokens": 65536,
-    "stream": false
-  }
+  "default_provider": "local",
+  "default_model": "qwen"
 }
 ```
 
@@ -88,8 +105,23 @@ Un exemple est fourni dans `config.example.json` (aussi installé dans
 ses valeurs par défaut (modèle local `qwen36-28b-reap` sur
 `http://localhost:18081/v1`).
 
+Le schéma legacy (single `provider` + `model` au top-level) reste accepté :
+il est reconstruit comme un provider `default` avec un seul modèle.
+
 Par défaut, A-ICE appelle `${provider.api_url}/chat/completions` (endpoint
 OpenAI-compatible).
+
+### Switch de modèle à la volée
+
+Dans un chat, la commande `/model` change de modèle (et de provider si besoin)
+sans relancer l'app :
+
+- `/model` — affiche le modèle courant.
+- `/model glm` — bascule vers le modèle d'alias `glm` (recherche par alias en
+  priorité, fallback sur le nom complet `glm-5.2`).
+- `/models` — liste tous les modèles disponibles (le courant est marqué `*`).
+
+La sélection est repoussée au client (`model` + `api_url`) au prochain envoi.
 
 ### SOUL.md — personnalité de l'agent
 
@@ -133,7 +165,7 @@ $EDITOR ~/.config/a-ice/SOUL.md
 - [x] SOUL.md system prompt
 - [x] Function calling (tools) — terminal, brave_search, fetch_url
 - [ ] Configuration GUI (adresse serveur, température, tokens max)
-- [ ] Support multi-modèle
+- [x] Support multi-modèle (commande /model)
 - [x] Icône personnalisée
 - [ ] Gestion du contexte (conversation longue)
 

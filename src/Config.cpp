@@ -16,14 +16,26 @@ Config::Config()
 
 void Config::applyDefaults()
 {
-    m_provider.name = QStringLiteral("openai_compatible");
-    m_provider.apiUrl = QStringLiteral("http://localhost:18081/v1");
-    m_provider.promptFormat = QStringLiteral("qwen");
+    // Defaults = modèle local de Dimitri (cf. settings.json Zed).
+    m_providers.clear();
+    Provider p;
+    p.id = QStringLiteral("default");
+    p.name = QStringLiteral("openai_compatible");
+    p.apiUrl = QStringLiteral("http://localhost:18081/v1");
+    p.promptFormat = QStringLiteral("qwen");
+    Model m;
+    m.alias = QStringLiteral("qwen");
+    m.name = QStringLiteral("qwen36-28b-reap");
+    m.temperature = 0.7;
+    m.maxTokens = 64;
+    m.stream = false;
+    p.models.append(m);
+    m_providers.append(p);
 
-    m_model.name = QStringLiteral("qwen36-28b-reap");
-    m_model.temperature = 0.7;
-    m_model.maxTokens = 64;
-    m_model.stream = false;
+    m_currentProviderId = p.id;
+    m_currentModelAlias = m.alias;
+
+    syncCurrent();
 }
 
 // Valeurs par défaut = modèle local de Dimitri (cf. settings.json Zed).
@@ -39,6 +51,43 @@ QString Config::defaultConfigPath()
     // ~/.config/a-ice/config.json
     const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
     return QDir(base).filePath(QStringLiteral("a-ice/config.json"));
+}
+
+void Config::syncCurrent()
+{
+    // Retrouve le provider courant.
+    const Provider *pp = nullptr;
+    for (const auto &p : m_providers) {
+        if (p.id == m_currentProviderId) {
+            pp = &p;
+            break;
+        }
+    }
+    if (!pp && !m_providers.isEmpty())
+        pp = &m_providers.first();
+    if (!pp) {
+        // Aucun provider : on garde l'ancienne vue (defaults au pire).
+        return;
+    }
+    m_provider = *pp;
+    // Normalise api_url (trailing slash) pour la vue courante.
+    if (!m_provider.apiUrl.isEmpty() && !m_provider.apiUrl.endsWith('/'))
+        m_provider.apiUrl += '/';
+
+    // Retrouve le modèle courant dans ce provider.
+    const Model *mm = nullptr;
+    for (const auto &mdl : pp->models) {
+        if (mdl.alias == m_currentModelAlias) {
+            mm = &mdl;
+            break;
+        }
+    }
+    if (!mm && !pp->models.isEmpty())
+        mm = &pp->models.first();
+    if (mm) {
+        m_model = *mm;
+        m_currentModelAlias = mm->alias;
+    }
 }
 
 bool Config::load(const QString &path)
@@ -68,36 +117,88 @@ bool Config::load(const QString &path)
 
     const QJsonObject root = doc.object();
 
-    // Provider
-    const QJsonObject provider = root.value(QStringLiteral("provider")).toObject();
-    if (provider.contains(QStringLiteral("name"))) {
-        m_provider.name = provider.value(QStringLiteral("name")).toString();
-    }
-    if (provider.contains(QStringLiteral("api_url"))) {
-        m_provider.apiUrl = provider.value(QStringLiteral("api_url")).toString();
-    }
-    if (provider.contains(QStringLiteral("prompt_format"))) {
-        m_provider.promptFormat = provider.value(QStringLiteral("prompt_format")).toString();
+    // ---- Providers : nouveau schéma multi-providers ----
+    QList<Provider> providers;
+    const QJsonObject providersObj = root.value(QStringLiteral("providers")).toObject();
+    if (!providersObj.isEmpty()) {
+        for (auto it = providersObj.begin(); it != providersObj.end(); ++it) {
+            const QJsonObject po = it.value().toObject();
+            Provider p;
+            p.id = it.key();
+            if (po.contains(QStringLiteral("name")))
+                p.name = po.value(QStringLiteral("name")).toString();
+            if (po.contains(QStringLiteral("api_url")))
+                p.apiUrl = po.value(QStringLiteral("api_url")).toString();
+            if (po.contains(QStringLiteral("prompt_format")))
+                p.promptFormat = po.value(QStringLiteral("prompt_format")).toString();
+
+            const QJsonObject modelsObj = po.value(QStringLiteral("models")).toObject();
+            for (auto mit = modelsObj.begin(); mit != modelsObj.end(); ++mit) {
+                const QJsonObject mo = mit.value().toObject();
+                Model m;
+                m.alias = mit.key();
+                if (mo.contains(QStringLiteral("name"))) {
+                    m.name = mo.value(QStringLiteral("name")).toString();
+                } else {
+                    // Si pas de name explicite, l'alias fait office de name.
+                    m.name = m.alias;
+                }
+                if (mo.contains(QStringLiteral("temperature")))
+                    m.temperature = mo.value(QStringLiteral("temperature")).toDouble(m.temperature);
+                if (mo.contains(QStringLiteral("max_tokens")))
+                    m.maxTokens = static_cast<int>(mo.value(QStringLiteral("max_tokens")).toInt(m.maxTokens));
+                if (mo.contains(QStringLiteral("stream")))
+                    m.stream = mo.value(QStringLiteral("stream")).toBool(m.stream);
+                p.models.append(m);
+            }
+            if (!p.models.isEmpty())
+                providers.append(p);
+        }
     }
 
-    // Model
-    const QJsonObject model = root.value(QStringLiteral("model")).toObject();
-    if (model.contains(QStringLiteral("name"))) {
-        m_model.name = model.value(QStringLiteral("name")).toString();
-    }
-    if (model.contains(QStringLiteral("temperature"))) {
-        m_model.temperature = model.value(QStringLiteral("temperature")).toDouble(m_model.temperature);
-    }
-    if (model.contains(QStringLiteral("max_tokens"))) {
-        m_model.maxTokens = static_cast<int>(model.value(QStringLiteral("max_tokens")).toInt(m_model.maxTokens));
-    }
-    if (model.contains(QStringLiteral("stream"))) {
-        m_model.stream = model.value(QStringLiteral("stream")).toBool(m_model.stream);
+    // ---- Schéma legacy : provider/model au top-level ----
+    // Reconstruit un provider "default" si "providers" est absent ou vide.
+    if (providers.isEmpty()) {
+        const QJsonObject provider = root.value(QStringLiteral("provider")).toObject();
+        const QJsonObject model = root.value(QStringLiteral("model")).toObject();
+        if (!provider.isEmpty() || !model.isEmpty()) {
+            Provider p;
+            p.id = QStringLiteral("default");
+            if (provider.contains(QStringLiteral("name")))
+                p.name = provider.value(QStringLiteral("name")).toString();
+            else
+                p.name = QStringLiteral("openai_compatible");
+            if (provider.contains(QStringLiteral("api_url")))
+                p.apiUrl = provider.value(QStringLiteral("api_url")).toString();
+            if (provider.contains(QStringLiteral("prompt_format")))
+                p.promptFormat = provider.value(QStringLiteral("prompt_format")).toString();
+
+            Model m;
+            m.alias = model.value(QStringLiteral("name")).toString();
+            if (m.alias.isEmpty())
+                m.alias = QStringLiteral("qwen36-28b-reap");
+            m.name = m.alias;
+            if (model.contains(QStringLiteral("temperature")))
+                m.temperature = model.value(QStringLiteral("temperature")).toDouble(m.temperature);
+            if (model.contains(QStringLiteral("max_tokens")))
+                m.maxTokens = static_cast<int>(model.value(QStringLiteral("max_tokens")).toInt(m.maxTokens));
+            if (model.contains(QStringLiteral("stream")))
+                m.stream = model.value(QStringLiteral("stream")).toBool(m.stream);
+            p.models.append(m);
+            providers.append(p);
+        }
     }
 
-    // Normalisation : api_url doit se terminer par "/" pour pouvoir concaténer "chat/completions".
-    if (!m_provider.apiUrl.isEmpty() && !m_provider.apiUrl.endsWith('/')) {
-        m_provider.apiUrl += '/';
+    // Si rien n'a été parsé, on garde les defaults (déjà posés par applyDefaults).
+    if (!providers.isEmpty()) {
+        m_providers = providers;
+        m_currentProviderId = root.value(QStringLiteral("default_provider")).toString();
+        m_currentModelAlias = root.value(QStringLiteral("default_model")).toString();
+        if (m_currentProviderId.isEmpty())
+            m_currentProviderId = m_providers.first().id;
+        if (m_currentModelAlias.isEmpty())
+            m_currentModelAlias = m_providers.first().models.first().alias;
+        syncCurrent();
     }
 
     // Tools (function calling) : optionnel.
@@ -146,7 +247,76 @@ bool Config::load(const QString &path)
         qInfo() << "[a-ice] SOUL.md absent (pas de prompt système)";
     }
 
+    qInfo() << "[a-ice] providers:" << m_providers.size()
+            << "courant: provider=" << m_currentProviderId
+            << "model alias=" << m_currentModelAlias
+            << "name=" << m_model.name;
+
     return true;
+}
+
+bool Config::switchModel(const QString &aliasOrName, QString *message)
+{
+    if (m_providers.isEmpty()) {
+        if (message) *message = QStringLiteral("Aucun provider configuré.");
+        return false;
+    }
+    const QString key = aliasOrName.trimmed();
+    if (key.isEmpty()) {
+        if (message) *message = QStringLiteral("Alias vide.");
+        return false;
+    }
+
+    // 1. Provider courant d'abord : par alias puis par name.
+    const Provider *curP = nullptr;
+    for (const auto &p : m_providers) {
+        if (p.id == m_currentProviderId) { curP = &p; break; }
+    }
+    if (curP) {
+        for (const auto &m : curP->models) {
+            if (m.alias == key || m.name == key) {
+                m_currentModelAlias = m.alias;
+                syncCurrent();
+                if (message)
+                    *message = QStringLiteral("Modèle : %1 (%2) @ %3")
+                        .arg(m.alias, m.name, curP->id);
+                qInfo() << "[a-ice] switch model ->" << m.alias << "/" << m.name
+                        << "provider" << curP->id;
+                return true;
+            }
+        }
+    }
+
+    // 2. Autres providers : par alias puis par name.
+    for (const auto &p : m_providers) {
+        if (p.id == m_currentProviderId) continue;
+        for (const auto &m : p.models) {
+            if (m.alias == key || m.name == key) {
+                m_currentProviderId = p.id;
+                m_currentModelAlias = m.alias;
+                syncCurrent();
+                if (message)
+                    *message = QStringLiteral("Modèle : %1 (%2) @ %3")
+                        .arg(m.alias, m.name, p.id);
+                qInfo() << "[a-ice] switch model+provider ->" << m.alias << "/"
+                        << m.name << "provider" << p.id;
+                return true;
+            }
+        }
+    }
+
+    // 3. Introuvable : liste les alias dispo pour aider.
+    QString list;
+    for (const auto &p : m_providers) {
+        for (const auto &m : p.models) {
+            if (!list.isEmpty()) list += QStringLiteral(", ");
+            list += m.alias;
+        }
+    }
+    if (message)
+        *message = QStringLiteral("Modèle introuvable : '%1'. Disponibles : %2.")
+            .arg(key, list);
+    return false;
 }
 
 QString Config::loadSoul(const QString &configDir)

@@ -75,3 +75,12 @@ add_executable(test_chatmessage
     src/ChatMessage.cpp
 )
 target_link_libraries(test_chatmessage PRIVATE Qt6::Core)
+
+# --- Test unitaire Config (multi-providers + switchModel) --------------
+# Link uniquement Config.cpp + Qt6::Core. Aucun terminal, aucun réseau.
+add_executable(test_config
+    tests/test_config.cpp
+    src/Config.h
+    src/Config.cpp
+)
+target_link_libraries(test_config PRIVATE Qt6::Core)

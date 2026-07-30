@@ -1,15 +1,40 @@
 {
-  "provider": {
-    "name": "openai_compatible",
-    "api_url": "http://localhost:18081/v1",
-    "prompt_format": "qwen"
+  "providers": {
+    "local": {
+      "name": "openai_compatible",
+      "api_url": "http://localhost:18081/v1",
+      "prompt_format": "qwen",
+      "models": {
+        "qwen": {
+          "name": "qwen36-28b-reap",
+          "temperature": 0.7,
+          "max_tokens": 65536,
+          "stream": true
+        },
+        "glm": {
+          "name": "glm-5.2",
+          "temperature": 0.7,
+          "max_tokens": 65536,
+          "stream": true
+        }
+      }
+    },
+    "cloud": {
+      "name": "openai_compatible",
+      "api_url": "https://api.exemple.com/v1",
+      "prompt_format": "chatml",
+      "models": {
+        "gpt": {
+          "name": "gpt-4o-mini",
+          "temperature": 0.7,
+          "max_tokens": 16384,
+          "stream": true
+        }
+      }
+    }
   },
-  "model": {
-    "name": "qwen36-28b-reap",
-    "temperature": 0.7,
-    "max_tokens": 65536,
-    "stream": true
-  },
+  "default_provider": "local",
+  "default_model": "qwen",
   "tools": {
     "enabled": true,
     "brave_api_key": "",
