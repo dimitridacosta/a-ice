@@ -84,7 +84,14 @@ ChatWidget::ChatWidget(QWidget *parent)
     // Throttle court (1 frame ~16ms) : le blur suit le contenu frame par frame.
     // L'ancien 80ms laissait le blur en retard sur les bulles (décalage visible).
     m_blurTimer.setInterval(16);
-    connect(&m_blurTimer, &QTimer::timeout, this, [this]() { updateBlurRegion(true); });
+    connect(&m_blurTimer, &QTimer::timeout, this, [this]() {
+        // Recalcule le blur (géométrie à jour, le timer expire après le layout)
+        // et programme un repaint coalescé à la frame suivante — PAS de repaint
+        // synchrone : sinon le blur serait appliqué AVANT le repaint du contenu
+        // de la bulle (QScrollArea, asynchrone) et semblerait « en avance ».
+        updateBlurRegion(false);
+        update();
+    });
 }
 
 ChatWidget::~ChatWidget() = default;
@@ -1046,8 +1053,14 @@ void ChatWidget::scrollToBottom()
     // laisse lire tranquillement sans le renvoyer en bas à chaque chunk.
     if (!m_autoScroll)
         return;
+    // Marque ce scroll comme programmatique : onScrollMoved ne doit PAS
+    // recalculer le blur synchrone ici car la géométrie des bulles n'est pas
+    // encore à jour (layout pending juste après l'append du chunk). Le blur
+    // sera recalculé par scheduleBlurUpdate une fois le layout traité.
+    m_programmaticScroll = true;
     QScrollBar *bar = m_scrollArea->verticalScrollBar();
     bar->setValue(bar->maximum());
+    m_programmaticScroll = false;
 }
 
 void ChatWidget::onScrollChanged()
@@ -1068,6 +1081,14 @@ void ChatWidget::onScrollMoved()
     // bulles (décalage visible). Pas de repaint synchrone ici (forceRepaint=
     // false) : on laisse update() coalescer le repaint à la frame suivante,
     // ce qui synchronise ombres + commit blur Wayland à la même frame.
+    //
+    // SAUF pendant l'écriture (scroll programmatique via scrollToBottom) : la
+    // géométrie des bulles n'est pas encore à jour (layout pending après
+    // l'append du chunk), un recalcul synchrone positionnerait le blur sur
+    // l'ancienne taille → gros décalage. On laisse scheduleBlurUpdate le faire
+    // une fois le layout traité.
+    if (m_programmaticScroll)
+        return;
     updateBlurRegion(false);
     update();
 }
