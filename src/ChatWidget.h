@@ -160,6 +160,7 @@ private:
 
     bool m_isTyping = false;
     bool m_autoScroll = true;  // suivi auto : on ne scolle que si l'utilisateur est en bas
+    int m_lastCompactTokensAvant = -1;  // tokens avant dernier /compact (pour afficher la réduction)
     int m_toolIterations = 0;
     int m_maxToolIterations = 8; // limite anti-boucle, config via tools.max_tool_iterations
     bool m_interruptRequested = false;        // bouton Stop pendant exec tools

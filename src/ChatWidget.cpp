@@ -81,27 +81,24 @@ private:
 } // namespace
 
 const QString kCompactPrompt = QStringLiteral(
-    "You are a context-compaction assistant. Produce a concise but complete "
-    "summary of the conversation so far, so the main assistant can continue "
-    "without losing the thread or any important detail.\n\n"
-    "Output a structured summary with these sections:\n"
-    "- **Goals & state**: what the user is trying to achieve, current progress, "
-    "what is done and what is pending.\n"
-    "- **Key decisions & facts**: decisions made, constraints, preferences, "
-    "names, file paths, commands, code, config keys, numbers, URLs — preserve "
-    "exact identifiers verbatim.\n"
-    "- **Recent context**: the last few exchanges, captured precisely enough to "
-    "keep the conversation flowing naturally — include the most recent user "
-    "request and the assistant's latest answer.\n"
-    "- **Open questions / next steps**: anything awaiting resolution.\n\n"
-    "Rules:\n"
-    "- Be precise and factual; do not invent or guess.\n"
-    "- Prefer tight bullet points. Keep it complete but as short as possible.\n"
-    "- The summary MUST be notably SHORTER than the conversation (compaction = \n"
-    "  reduction); if the conversation is short, output only a 1-2 sentence recap.\n"
-    "- If a previous compacted context is provided, integrate it — preserve the \n"
-    "  accumulated facts and running thread, do NOT repeat it verbatim.\n"
-    "- Output ONLY the summary, no preamble, no commentary.");
+    "You are a context-compaction assistant. Summarize the conversation so the "
+    "main assistant can continue seamlessly — preserving the detail that matters "
+    "while cutting tokens. This is a REDUCTION, not a restatement.\n\n"
+    "PRESERVE (keep the essentials):\n"
+    "- Goal and current state: what the user is trying to do, what's done, what's pending.\n"
+    "- Key decisions, constraints, preferences agreed on.\n"
+    "- Exact identifiers — file paths, commands, code, config keys, numbers, URLs — \n"
+    "  verbatim, never paraphrased or invented.\n"
+    "- The thread of the last 2-3 exchanges, precise enough that the conversation \n"
+    "  flows naturally (include the most recent user request + assistant answer).\n"
+    "- Open questions / next steps.\n\n"
+    "ELIMINATE (cut the rest):\n"
+    "- Repetition, filler, pleasantries, verbose explanations, intermediate dead-ends.\n"
+    "- Anything not needed to continue the work.\n\n"
+    "Format: tight bullet points grouped by theme. Keep the detail that matters,\n"
+    "drop the noise. Target roughly 20-30% of the input length — a real reduction.\n"
+    "If a previous compacted context is provided, fold it in without repeating it.\n"
+    "Be precise and factual; never invent. Output ONLY the summary.");
 
 ChatWidget::ChatWidget(QWidget *parent)
     : QWidget(parent)
@@ -544,6 +541,7 @@ void ChatWidget::compactConversation()
     toSummarize += conv;
 
     const int nbAvant = m_messages.size();
+    m_lastCompactTokensAvant = tokensAvant;
     showSystemNote(QStringLiteral("⏳ Compaction du contexte (%1 messages, ~%2 tokens)…")
                        .arg(nbAvant).arg(tokensAvant));
 
@@ -571,9 +569,23 @@ void ChatWidget::onSummaryReady(const QString &summary)
     m_client->setContextSummary(ctx);
     const int nb = m_messages.size();
     m_messages.clear();
-    showSystemNote(QStringLiteral("✓ Contexte compacté (%1 messages → résumé injecté comme contexte).\n\n%2")
-                       .arg(nb).arg(summary.trimmed()));
-    qInfo() << "[a-ice] contexte compacté :" << nb << "messages -> résumé" << ctx.size() << "chars";
+    const int apres = m_client->estimateContextTokens(m_messages);  // SOUL + tools + résumé
+
+    QString recap = QStringLiteral("✓ Contexte compacté (%1 messages → résumé).").arg(nb);
+    if (m_lastCompactTokensAvant > 0 && apres < m_lastCompactTokensAvant) {
+        const int gagne = m_lastCompactTokensAvant - apres;
+        const double pct = gagne * 100.0 / m_lastCompactTokensAvant;
+        recap += QStringLiteral("  ~%1 → ~%2 tokens (−%3, %4% gagné).")
+                     .arg(m_lastCompactTokensAvant).arg(apres).arg(gagne)
+                     .arg(QString::number(pct, 'f', 0));
+    } else if (m_lastCompactTokensAvant > 0) {
+        recap += QStringLiteral("  ⚠ ~%1 → ~%2 tokens (pas de réduction — résumé trop long ?)")
+                     .arg(m_lastCompactTokensAvant).arg(apres);
+    }
+    m_lastCompactTokensAvant = -1;
+    recap += QStringLiteral("\n\n%1").arg(summary.trimmed());
+    showSystemNote(recap);
+    qInfo() << "[a-ice] contexte compacté :" << nb << "messages ->" << apres << "tokens";
 }
 
 void ChatWidget::showContextInfo()
