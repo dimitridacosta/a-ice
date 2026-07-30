@@ -103,12 +103,11 @@ int LlamaClient::estimateContextTokens(const QList<ChatMessage> &messages) const
             sys += QStringLiteral("\n\n");
         sys += m_contextSummary;
     }
-    if (!m_timeContext.isEmpty()) {
-        if (!sys.trimmed().isEmpty())
-            sys += QStringLiteral("\n\n");
-        sys += m_timeContext;
-    }
     int chars = sys.size();
+    // Le time system est injecté comme un message system séparé avant le
+    // dernier user (cf. makeRequest) — on le compte comme un message.
+    if (!m_timeContext.isEmpty())
+        chars += m_timeContext.size() + 8;  // role="system" overhead + content
     for (const auto &msg : messages) {
         chars += msg.role.size() + 4;   // "role": ... overhead
         chars += msg.content.size();
@@ -192,15 +191,11 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
                 sys += QStringLiteral("\n\n");
             sys += m_contextSummary;
         }
-        // Contexte temporel (date/heure) : rafraîchi toutes les 15 min max,
-        // juste l'heure (date si le jour a changé). Minimise les tokens tout
-        // en gardant le modèle au courant du temps qui passe.
-        refreshTimeContext();
-        if (!m_timeContext.isEmpty()) {
-            if (!sys.trimmed().isEmpty())
-                sys += QStringLiteral("\n\n");
-            sys += m_timeContext;
-        }
+        // NB : le contexte temporel (date/heure) n'est PAS dans le system de
+        // tête — il est injecté comme un message system séparé juste avant le
+        // dernier user (cf. boucle ci-dessous) pour préserver le cache de
+        // prompt : le system de tête reste STABLE, seul le time + le dernier
+        // user sont (re)computés.
     }
     if (!sys.trimmed().isEmpty()) {
         QJsonObject sysObj;
@@ -209,8 +204,25 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
         messagesArray.append(sysObj);
     }
 
-    for (const auto &msg : messages) {
-        messagesArray.append(msg.toJson());
+    // Rafraîchit le contexte temporel (toutes les 15 min max) ; injecté comme
+    // un message system juste avant le dernier user (nouveau tour) — pas en
+    // mode compaction, pas pendant la boucle tools (le dernier message n'est pas
+    // un user). Ainsi le cache de l'historique (system de tête + messages
+    // précédents) est préservé : seul le time system + le dernier user sont
+    // nouveaux.
+    const bool injectTime = !m_summarizing;
+    if (injectTime)
+        refreshTimeContext();
+    const int nMsg = messages.size();
+    for (int i = 0; i < nMsg; ++i) {
+        if (injectTime && !m_timeContext.isEmpty()
+            && i == nMsg - 1 && messages[i].role == QLatin1String("user")) {
+            QJsonObject timeObj;
+            timeObj["role"] = QStringLiteral("system");
+            timeObj["content"] = m_timeContext;
+            messagesArray.append(timeObj);
+        }
+        messagesArray.append(messages[i].toJson());
     }
 
     json["messages"] = messagesArray;
