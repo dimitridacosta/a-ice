@@ -79,19 +79,6 @@ ChatWidget::ChatWidget(QWidget *parent)
 {
     setupUI();
     setupGlass();
-
-    m_blurTimer.setSingleShot(true);
-    // Throttle court (1 frame ~16ms) : le blur suit le contenu frame par frame.
-    // L'ancien 80ms laissait le blur en retard sur les bulles (décalage visible).
-    m_blurTimer.setInterval(16);
-    connect(&m_blurTimer, &QTimer::timeout, this, [this]() {
-        // Recalcule le blur (géométrie à jour, le timer expire après le layout)
-        // et programme un repaint coalescé à la frame suivante — PAS de repaint
-        // synchrone : sinon le blur serait appliqué AVANT le repaint du contenu
-        // de la bulle (QScrollArea, asynchrone) et semblerait « en avance ».
-        updateBlurRegion(false);
-        update();
-    });
 }
 
 ChatWidget::~ChatWidget() = default;
@@ -250,20 +237,26 @@ void ChatWidget::setupGlass()
 
 void ChatWidget::scheduleBlurUpdate()
 {
-    update(); // fenêtre : redessine toutes les ombres + planifie le blur
-    if (!m_blurTimer.isActive()) m_blurTimer.start();
+    // Déclenche un repaint : le blur est recalculé dans paintEvent (géométrie
+    // à jour, commit à la frame courante) -> synchronisé avec le contenu.
+    update();
 }
 
-void ChatWidget::updateBlurRegion(bool forceRepaint)
+void ChatWidget::applyBlurRegion()
 {
     // Blur KWin + masque de clic appliqués UNIQUEMENT derrière les éléments
     // visibles (barre + chaque bulle). La fenêtre elle-même reste totalement
     // transparente : pas de grande carte floutée, juste des bulles verre
     // flottantes indépendantes. Le click-through passe hors des bulles.
+    //
+    // Appelée dans paintEvent : la géométrie est à jour (layout fait par Qt
+    // avant le paint) et le commit Wayland se fait à la fin de ce paint (frame
+    // courante) -> le blur est synchronisé avec le contenu affiché, sans retard
+    // d'une frame sur la taille de la bulle pendant l'écriture.
     QWindow *win = window()->windowHandle();
     if (!win) {
         if (isVisible())
-            QTimer::singleShot(100, this, [this]() { updateBlurRegion(true); });
+            QTimer::singleShot(0, this, [this]() { update(); });
         return;
     }
 
@@ -307,19 +300,21 @@ void ChatWidget::updateBlurRegion(bool forceRepaint)
     win->setMask(region);
     KWindowEffects::enableBlurBehind(win, true, region);
 
-    // CRUCIAL : enableBlurBehind ne commit pas la surface Wayland. KWin n'applique
-    // le nouveau blur qu'au prochain repaint de la fenêtre (d'où l'effet « bouger
-    // la souris / ouvrir le menu KDE pour que ça se redessine »). On force donc un
-    // repaint immédiat pour committer la surface et déclencher le re-render du blur.
-    // Au scroll, on saute ce repaint synchrone (forceRepaint=false) : le caller
-    // programme un update() coalescé à la frame suivante, ce qui commit le blur
-    // sans surcharger (pas de repaint synchrone par event de scroll).
-    if (forceRepaint)
-        if (auto *top = window()) top->repaint();
+    // Pas de repaint ici : on est appelée dans paintEvent, le commit Wayland
+    // se fait à la fin de ce paint (frame courante). Le blur est donc appliqué
+    // à la même frame que le contenu affiché -> pas de décalage.
 }
 
 void ChatWidget::paintEvent(QPaintEvent *e)
 {
+    // Recalcule le blur ICI : paintEvent s'exécute après le layout (géométrie à
+    // jour) et le commit Wayland se fait à la fin de ce paint (frame courante),
+    // synchronisé avec le contenu de la bulle (peint dans le même paint par le
+    // QScrollArea). C'est ce qui élimine le décalage bulle/blur pendant
+    // l'écriture : la taille de la bulle est à jour au moment du recalcul, pas
+    // une frame en retard.
+    applyBlurRegion();
+
     // Toutes les ombres (bulles + barre) peintes sur la fenêtre en une passe →
     // alignement parfait et chevauchement libre (addition des ombres).
     //
@@ -1053,14 +1048,8 @@ void ChatWidget::scrollToBottom()
     // laisse lire tranquillement sans le renvoyer en bas à chaque chunk.
     if (!m_autoScroll)
         return;
-    // Marque ce scroll comme programmatique : onScrollMoved ne doit PAS
-    // recalculer le blur synchrone ici car la géométrie des bulles n'est pas
-    // encore à jour (layout pending juste après l'append du chunk). Le blur
-    // sera recalculé par scheduleBlurUpdate une fois le layout traité.
-    m_programmaticScroll = true;
     QScrollBar *bar = m_scrollArea->verticalScrollBar();
     bar->setValue(bar->maximum());
-    m_programmaticScroll = false;
 }
 
 void ChatWidget::onScrollChanged()
@@ -1075,21 +1064,10 @@ void ChatWidget::onScrollChanged()
 
 void ChatWidget::onScrollMoved()
 {
-    // Le scroll déplace les bulles en coords fenêtre. On recalcule la region
-    // blur SYNCHRONE (setMask + enableBlurBehind) pour qu'elle suive le
-    // contenu sans attendre le throttle — sinon le blur reste en retard des
-    // bulles (décalage visible). Pas de repaint synchrone ici (forceRepaint=
-    // false) : on laisse update() coalescer le repaint à la frame suivante,
-    // ce qui synchronise ombres + commit blur Wayland à la même frame.
-    //
-    // SAUF pendant l'écriture (scroll programmatique via scrollToBottom) : la
-    // géométrie des bulles n'est pas encore à jour (layout pending après
-    // l'append du chunk), un recalcul synchrone positionnerait le blur sur
-    // l'ancienne taille → gros décalage. On laisse scheduleBlurUpdate le faire
-    // une fois le layout traité.
-    if (m_programmaticScroll)
-        return;
-    updateBlurRegion(false);
+    // Le scroll déplace les bulles en coords fenêtre : on repeint (paintEvent
+    // recalcule le blur avec la géométrie à jour au moment du paint). Plus de
+    // recalcul séparé en retard : le blur colle au contenu, scroll manuel ET
+    // auto-scroll pendant l'écriture.
     update();
 }
 

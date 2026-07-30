@@ -114,11 +114,10 @@ private:
     void clearWaitingBlock();
 
     /// Recalcule et applique la region blur KWin (union bulles + barre).
-    /// Si forceRepaint=false, ne force pas le repaint synchrone (le caller
-    /// se charge de repeindre via update()), utile pendant le scroll pour
-    /// synchroniser ombres + blur à la même frame sans surcharger.
-    void updateBlurRegion(bool forceRepaint = true);
-    /// Re-planifie un recalcul de blur (throttled).
+    /// SANS repaint : appelée dans paintEvent (géométrie à jour, commit à la
+    /// frame courante) pour synchroniser le blur avec le contenu affiché.
+    void applyBlurRegion();
+    /// Re-planifie un repaint (le blur est recalculé dans paintEvent).
     void scheduleBlurUpdate();
 
     /// Region blur/mask actuelle (pour ne rien reapply si inchangée → anti-clignote).
@@ -145,11 +144,8 @@ private:
     WaitingBlock  *m_waitingBlock   = nullptr;  // placeholder avant 1er chunk
     QString m_currentContent; // contenu de la réponse en cours (pour l'historique API)
 
-    QTimer m_blurTimer;
-
     bool m_isTyping = false;
     bool m_autoScroll = true;  // suivi auto : on ne scolle que si l'utilisateur est en bas
-    bool m_programmaticScroll = false;  // scroll via scrollToBottom (stream) vs scroll utilisateur
     int m_toolIterations = 0;
     int m_maxToolIterations = 8; // limite anti-boucle, config via tools.max_tool_iterations
     bool m_interruptRequested = false;        // bouton Stop pendant exec tools
