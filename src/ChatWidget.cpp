@@ -576,15 +576,15 @@ void ChatWidget::showContextInfo()
     s += QStringLiteral("- temp `%1`\n").arg(mdl.temperature);
     s += QStringLiteral("- `%1`\n").arg(mdl.stream ? QStringLiteral("stream") : QStringLiteral("no stream"));
     s += QStringLiteral("- sortie max `%1`\n\n").arg(loc.toString(mdl.maxTokens));
-    s += QStringLiteral("**Contexte** — ~%1 tokens\n").arg(loc.toString(tokens));
+    s += QStringLiteral("**Contexte** — ~%1 tokens\\\n").arg(loc.toString(tokens));
     s += QStringLiteral("system + %1 messages (estimé chars/4)\n\n").arg(nMsg);
 
     if (mdl.contextWindow > 0) {
         const double pct = tokens * 100.0 / mdl.contextWindow;
         const int restant = mdl.contextWindow - tokens;
-        s += QStringLiteral("**Fenêtre** — %1 tokens\n").arg(loc.toString(mdl.contextWindow));
-        s += QStringLiteral("`%1`\n").arg(bar(pct));
-        s += QStringLiteral("%1 %% utilisé\n").arg(QString::number(pct, 'f', 1));
+        s += QStringLiteral("**Fenêtre** — %1 tokens\\\n").arg(loc.toString(mdl.contextWindow));
+        s += QStringLiteral("`%1`\\\n").arg(bar(pct));
+        s += QString::number(pct, 'f', 1) + QStringLiteral(" % utilisé\\\n");
         s += QStringLiteral("%1 restants\n").arg(loc.toString(restant));
         if (tokens > mdl.contextWindow * 0.9)
             s += QStringLiteral("\n> ⚠️ Proche du max — `/compact` pour réduire.\n");
