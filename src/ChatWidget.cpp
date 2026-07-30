@@ -340,6 +340,13 @@ void ChatWidget::paintEvent(QPaintEvent *e)
         .translated(m_scrollArea->viewport()->mapTo(this, QPoint(0, 0)))
         .adjusted(-margin, -margin, margin, margin);
 
+    // Ombres des bulles : clipées à la zone du scrollArea (au-dessus de la
+    // barre de prompt). Sans ça, l'ombre d'une bulle en bas du viewport
+    // déborde sous la barre pendant le scroll up (les ombres sont peintes par
+    // la fenêtre parente, donc bypassent le clip du viewport du QScrollArea).
+    p.save();
+    p.setClipRect(m_scrollArea->geometry(), Qt::IntersectClip);
+
     // Ombres des bulles (coordonnées fenêtre, scroll pris en compte par mapTo).
     for (int i = 0; i < m_messagesLayout->count(); ++i) {
         QLayoutItem *item = m_messagesLayout->itemAt(i);
@@ -351,8 +358,9 @@ void ChatWidget::paintEvent(QPaintEvent *e)
             continue;  // hors écran : on skip l'ombre (gain sur longues conversations)
         drawShadow(p, b->shadowImage(), card);
     }
+    p.restore();
 
-    // Ombre de la barre de prompt (toujours visible).
+    // Ombre de la barre de prompt (toujours visible, non clipée au scrollArea).
     if (m_promptBar) {
         const QRect card = m_promptBar->geometry()
             .adjusted(kGlassInset, kGlassInset, -kGlassInset, -kGlassInset);
