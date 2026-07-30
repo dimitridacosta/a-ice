@@ -300,11 +300,32 @@ void ChatWidget::updateBlurRegion()
     if (auto *top = window()) top->repaint();
 }
 
-void ChatWidget::paintEvent(QPaintEvent *)
+void ChatWidget::paintEvent(QPaintEvent *e)
 {
     // Toutes les ombres (bulles + barre) peintes sur la fenêtre en une passe →
     // alignement parfait et chevauchement libre (addition des ombres).
+    //
+    // PERF : on ne peint QUE les ombres des bulles qui intersectent le viewport
+    // (+ marge pour le halo qui déborde). Sans ça, une longue conversation ferait
+    // dessiner à la fenêtre parente toutes les ombres — même hors écran — à chaque
+    // repaint (scroll + chaque chunk de stream), d'où un coût qui croît avec
+    // l'historique et ralentit le stream. Qt n'optimise pas ça tout seul car les
+    // ombres sont peintes par le parent (pas des widgets enfants), donc elles
+    // bypassent le culling de Qt sur les widgets hors viewport.
     QPainter p(this);
+
+    // Clip sur la zone dirty demandée par Qt (anti-travail inutile).
+    const QRegion dirty = e->region();
+    if (!dirty.isEmpty())
+        p.setClipRegion(dirty);
+
+    // Viewport du scrollArea en coords ChatWidget, avec une marge pour ne pas
+    // couper le halo des bulles partiellement visibles (pad ombre + offset).
+    const int pad = kGlassBlur * 2;              // 20px de halo
+    const int margin = pad + kGlassShadowOffset; // 23px
+    const QRect vp = m_scrollArea->viewport()->rect()
+        .translated(m_scrollArea->viewport()->mapTo(this, QPoint(0, 0)))
+        .adjusted(-margin, -margin, margin, margin);
 
     // Ombres des bulles (coordonnées fenêtre, scroll pris en compte par mapTo).
     for (int i = 0; i < m_messagesLayout->count(); ++i) {
@@ -313,10 +334,12 @@ void ChatWidget::paintEvent(QPaintEvent *)
         if (!b) continue;
         const QRect card = QRect(b->mapTo(this, QPoint(0, 0)), b->size())
             .adjusted(kGlassInset, kGlassInset, -kGlassInset, -kGlassInset);
+        if (!vp.intersects(card))
+            continue;  // hors écran : on skip l'ombre (gain sur longues conversations)
         drawShadow(p, b->shadowImage(), card);
     }
 
-    // Ombre de la barre de prompt.
+    // Ombre de la barre de prompt (toujours visible).
     if (m_promptBar) {
         const QRect card = m_promptBar->geometry()
             .adjusted(kGlassInset, kGlassInset, -kGlassInset, -kGlassInset);
