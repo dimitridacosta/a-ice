@@ -550,6 +550,35 @@ void ChatWidget::onSummaryReady(const QString &summary)
     qInfo() << "[a-ice] contexte compacté :" << nb << "messages -> résumé" << ctx.size() << "chars";
 }
 
+void ChatWidget::showContextInfo()
+{
+    const auto &mdl = m_config.model();
+    const QString alias = m_config.currentModelAlias();
+    const QString provider = m_config.currentProviderId();
+    const int tokens = m_client->estimateContextTokens(m_messages);
+    const int nMsg = m_messages.size();
+
+    QString s;
+    s += QStringLiteral("Modèle : %1 (%2) @ %3\n").arg(alias, mdl.name, provider);
+    s += QStringLiteral("  temp=%1  stream=%2  max_tokens(sortie)=%3\n")
+             .arg(mdl.temperature).arg(mdl.stream).arg(mdl.maxTokens);
+    s += QStringLiteral("Contexte : ~%1 tokens estimés (system + %2 messages) — heuristique chars/4\n")
+             .arg(tokens).arg(nMsg);
+    if (mdl.contextWindow > 0) {
+        const double pct = tokens * 100.0 / mdl.contextWindow;
+        const int restant = mdl.contextWindow - tokens;
+        s += QStringLiteral("  Fenêtre : %1 tokens → %2% utilisé, ~%3 restants")
+                 .arg(mdl.contextWindow).arg(pct, 0, 'f', 1).arg(restant);
+        if (tokens > mdl.contextWindow * 0.9)
+            s += QStringLiteral("  ⚠ proche du max — /compact pour réduire");
+    } else {
+        s += QStringLiteral("  Fenêtre max : non configurée (ajouter context_window au modèle)");
+    }
+    showSystemNote(s);
+    qInfo() << "[a-ice] /context :" << tokens << "tokens," << nMsg << "messages, modèle"
+             << mdl.name << "@" << provider;
+}
+
 void ChatWidget::onSendClicked()
 {
     QString text = m_promptEdit->toPlainText().trimmed();
@@ -632,6 +661,10 @@ bool ChatWidget::handleSlashCommand(const QString &text)
         compactConversation();
         return true;
     }
+    if (cmd == QLatin1String("/context") || cmd == QLatin1String("/tokens")) {
+        showContextInfo();
+        return true;
+    }
     if (cmd == QLatin1String("/help") || cmd == QLatin1String("/commands")) {
         // Affiche l'aide dans une carte systeme (style erreur, mais informatif).
         if (!m_currentBubble) startAssistantBubble();
@@ -642,6 +675,7 @@ bool ChatWidget::handleSlashCommand(const QString &text)
                 "- /new  (ou /clear) : reinitialise la conversation\n"
                 "- /model [alias|nom] : bascule de modele a la volee\n"
                 "- /models : liste les modeles disponibles\n"
+                "- /context : infos contexte (tokens, modele, fenetre)\n"
                 "- /compact : compacte le contexte (résumé injecté)\n"
                 "- /help : affiche cette aide"));
         }

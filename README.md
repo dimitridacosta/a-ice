@@ -76,6 +76,10 @@ Chaque provider accepte une `api_key` optionnelle (ex: token Ollama Cloud),
 injectée en `Authorization: Bearer`. Un override global est possible via la
 variable d'environnement `AICE_API_KEY` (prioritaire sur la config).
 
+Chaque modèle accepte un `context_window` optionnel (fenêtre de contexte du
+modèle, en tokens) — utilisé par la commande `/context` pour estimer le
+reste avant le max. 0 ou absent = inconnu.
+
 ```json
 {
   "providers": {
@@ -141,6 +145,13 @@ Le fil naturel est préservé : le prompt de compaction exige la capture précis
  des derniers échanges et des identifiants exacts (chemins, commandes, config,
  nombres). `/new` repart de zéro et abandonne le résumé compacté.
 
+### Infos contexte (`/context`)
+
+`/context` affiche le modèle en cours + une **estimation** des tokens du
+contexte (system prompt + messages, heuristique chars/4) et, si `context_window`
+est configuré pour le modèle, la fenêtre max et ce qu'il reste. Pratique avant
+une `/compact` pour décider s'il faut compacter.
+
 ### SOUL.md — personnalité de l'agent
 
 A-ICE lit en plus un fichier **SOUL.md** (Markdown texte brut) dont le contenu
@@ -185,6 +196,7 @@ $EDITOR ~/.config/a-ice/SOUL.md
 - [ ] Configuration GUI (adresse serveur, température, tokens max)
 - [x] Support multi-modèle (commande /model)
 - [x] Compaction du contexte (commande /compact)
+- [x] Infos contexte (commande /context)
 - [x] Icône personnalisée
 - [ ] Gestion du contexte (conversation longue)
 

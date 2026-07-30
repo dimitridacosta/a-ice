@@ -85,6 +85,34 @@ void LlamaClient::cancel()
     m_streamedContent.clear();
 }
 
+int LlamaClient::estimateContextTokens(const QList<ChatMessage> &messages) const
+{
+    // Reconstruit le system prompt (comme makeRequest) : SOUL + tools desc +
+    // contextSummary, puis ajoute tous les messages (role + content + tool_calls).
+    QString sys = m_config.systemPrompt();
+    if (!m_tools.isEmpty()) {
+        const QString tp = buildToolsSystemPrompt();
+        if (!tp.isEmpty()) {
+            if (!sys.trimmed().isEmpty())
+                sys += QStringLiteral("\n\n");
+            sys += tp;
+        }
+    }
+    if (!m_contextSummary.isEmpty()) {
+        if (!sys.trimmed().isEmpty())
+            sys += QStringLiteral("\n\n");
+        sys += m_contextSummary;
+    }
+    int chars = sys.size();
+    for (const auto &msg : messages) {
+        chars += msg.role.size() + 4;   // "role": ... overhead
+        chars += msg.content.size();
+        for (const auto &tc : msg.toolCalls)
+            chars += tc.name.size() + tc.arguments.size() + 16;  // id + structure
+    }
+    return chars / 4;  // heuristique 1 token ≈ 4 chars
+}
+
 void LlamaClient::requestSummary(const QList<ChatMessage> &messages)
 {
     // Compaction de contexte : requête non-stream, sans SOUL/tools/contextSummary

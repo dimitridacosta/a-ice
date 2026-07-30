@@ -66,7 +66,8 @@ public:
         QString alias;       // ex: "glm" (clé dans "models"), == name si non distinct
         QString name;        // ex: "glm-5.2" — nom réel envoyé à l'API
         double temperature = 0.7;
-        int maxTokens = 64;
+        int maxTokens = 64;       // sortie max demandée à l'API
+        int contextWindow = 0;   // fenêtre de contexte du modèle (tokens), 0 = inconnu
         bool stream = false;
     };
 

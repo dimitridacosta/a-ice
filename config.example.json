@@ -9,12 +9,14 @@
           "name": "qwen36-28b-reap",
           "temperature": 0.7,
           "max_tokens": 65536,
+          "context_window": 32768,
           "stream": true
         },
         "glm": {
           "name": "glm-5.2",
           "temperature": 0.7,
           "max_tokens": 65536,
+          "context_window": 131072,
           "stream": true
         }
       }
@@ -29,6 +31,7 @@
           "name": "gpt-4o-mini",
           "temperature": 0.7,
           "max_tokens": 16384,
+          "context_window": 128000,
           "stream": true
         }
       }

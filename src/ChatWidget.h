@@ -116,6 +116,10 @@ private:
     /// streaming) — utilisé par /compact pour le retour compaction.
     void showSystemNote(const QString &text);
 
+    /// Affiche les infos de contexte (commande /context) : modèle en cours,
+    /// tokens estimés du contexte, fenêtre max et reste.
+    void showContextInfo();
+
     /// Reinitialise la conversation : historique API, bulles, etat des blocs,
     /// approvals session. Utilise par /new.
     void resetConversation();

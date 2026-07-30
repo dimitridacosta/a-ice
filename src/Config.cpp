@@ -152,6 +152,8 @@ bool Config::load(const QString &path)
                     m.temperature = mo.value(QStringLiteral("temperature")).toDouble(m.temperature);
                 if (mo.contains(QStringLiteral("max_tokens")))
                     m.maxTokens = static_cast<int>(mo.value(QStringLiteral("max_tokens")).toInt(m.maxTokens));
+                if (mo.contains(QStringLiteral("context_window")))
+                    m.contextWindow = static_cast<int>(mo.value(QStringLiteral("context_window")).toInt(m.contextWindow));
                 if (mo.contains(QStringLiteral("stream")))
                     m.stream = mo.value(QStringLiteral("stream")).toBool(m.stream);
                 p.models.append(m);
@@ -192,6 +194,8 @@ bool Config::load(const QString &path)
                 m.temperature = model.value(QStringLiteral("temperature")).toDouble(m.temperature);
             if (model.contains(QStringLiteral("max_tokens")))
                 m.maxTokens = static_cast<int>(model.value(QStringLiteral("max_tokens")).toInt(m.maxTokens));
+            if (model.contains(QStringLiteral("context_window")))
+                m.contextWindow = static_cast<int>(model.value(QStringLiteral("context_window")).toInt(m.contextWindow));
             if (model.contains(QStringLiteral("stream")))
                 m.stream = model.value(QStringLiteral("stream")).toBool(m.stream);
             p.models.append(m);

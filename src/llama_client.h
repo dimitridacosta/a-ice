@@ -57,6 +57,12 @@ public:
     /// pour les requêtes normales. Vide = pas de contexte compacté.
     void setContextSummary(const QString &s) { m_contextSummary = s; }
 
+    /// Estime le nombre de tokens du contexte qui serait envoyé au modèle pour
+    /// `messages` : system prompt (SOUL + tools desc + contextSummary) + tous
+    /// les messages. Heuristique chars/4 (pas de tokenizer embarqué) — utile
+    /// pour l'aperçu /context, pas une mesure exacte.
+    int estimateContextTokens(const QList<ChatMessage> &messages) const;
+
 signals:
     /// Morceau de raisonnement (modèles thinking type Qwen3).
     void thinkingChunk(const QString &text);

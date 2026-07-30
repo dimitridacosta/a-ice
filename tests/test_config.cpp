@@ -75,7 +75,7 @@ int main(int argc, char *argv[])
             "      \"api_url\": \"http://localhost:18081/v1\",\n"
             "      \"prompt_format\": \"qwen\",\n"
             "      \"models\": {\n"
-            "        \"qwen\": { \"name\": \"qwen36-28b-reap\", \"temperature\": 0.7, \"max_tokens\": 65536, \"stream\": true },\n"
+            "        \"qwen\": { \"name\": \"qwen36-28b-reap\", \"temperature\": 0.7, \"max_tokens\": 65536, \"context_window\": 32768, \"stream\": true },\n"
             "        \"glm\":  { \"name\": \"glm-5.2\", \"temperature\": 0.7, \"max_tokens\": 65536, \"stream\": true }\n"
             "      }\n"
             "    },\n"
@@ -102,6 +102,7 @@ int main(int argc, char *argv[])
         check(c.model().name == QStringLiteral("qwen36-28b-reap"), "multi: model.name courant");
         check(c.model().stream == true, "multi: stream=true");
         check(c.model().maxTokens == 65536, "multi: max_tokens");
+        check(c.model().contextWindow == 32768, "multi: context_window");
         check(c.apiUrl() == QStringLiteral("http://localhost:18081/v1/"), "multi: api_url normalisée");
         check(c.provider().promptFormat == QStringLiteral("qwen"), "multi: prompt_format");
         check(c.providers().first().type == QStringLiteral("openai_compatible"),
