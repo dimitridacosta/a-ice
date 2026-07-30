@@ -97,6 +97,10 @@ const QString kCompactPrompt = QStringLiteral(
     "Rules:\n"
     "- Be precise and factual; do not invent or guess.\n"
     "- Prefer tight bullet points. Keep it complete but as short as possible.\n"
+    "- The summary MUST be notably SHORTER than the conversation (compaction = \n"
+    "  reduction); if the conversation is short, output only a 1-2 sentence recap.\n"
+    "- If a previous compacted context is provided, integrate it — preserve the \n"
+    "  accumulated facts and running thread, do NOT repeat it verbatim.\n"
     "- Output ONLY the summary, no preamble, no commentary.");
 
 ChatWidget::ChatWidget(QWidget *parent)
@@ -501,6 +505,16 @@ void ChatWidget::compactConversation()
         showSystemNote(QStringLiteral("✗ Rien à compacter : la conversation est vide."));
         return;
     }
+    // Garde : ne pas compacter un contexte court. Le résumé structuré fait
+    // ~400-600 tokens minimum ; si l'historique est plus court, /compact
+    // ajouterait du contexte au lieu d'en enlever.
+    const int tokensAvant = m_client->estimateContextTokens(m_messages);
+    const int nMsgAvant = m_messages.size();
+    if (tokensAvant < 1200 || nMsgAvant < 4) {
+        showSystemNote(QStringLiteral("✗ Contexte encore court (~%1 tokens, %2 messages) — pas besoin de compacter.")
+                           .arg(tokensAvant).arg(nMsgAvant));
+        return;
+    }
 
     // Formatte l'historique (sauf system) pour le LLM.
     QString conv;
@@ -519,8 +533,19 @@ void ChatWidget::compactConversation()
         return;
     }
 
+    // Inclut le résumé compacté précédent (s'il existe) dans la conversation à
+    // résumer : sinon un 2e /compact perdrait le contexte antérieur (le résumé
+    // précédent est en system prompt, pas dans m_messages).
+    const QString prevSummary = m_client->contextSummary();
+    QString toSummarize;
+    if (!prevSummary.isEmpty())
+        toSummarize = QStringLiteral("Previous compacted context:\n\n") + prevSummary
+                      + QStringLiteral("\n\n--- New messages since last compaction ---\n\n");
+    toSummarize += conv;
+
     const int nbAvant = m_messages.size();
-    showSystemNote(QStringLiteral("⏳ Compaction du contexte (%1 messages)…").arg(nbAvant));
+    showSystemNote(QStringLiteral("⏳ Compaction du contexte (%1 messages, ~%2 tokens)…")
+                       .arg(nbAvant).arg(tokensAvant));
 
     // Requête de résumé : [system = prompt de compaction, user = conversation].
     QList<ChatMessage> req;
@@ -529,7 +554,7 @@ void ChatWidget::compactConversation()
     sysMsg.content = kCompactPrompt;
     ChatMessage userMsg;
     userMsg.role = QStringLiteral("user");
-    userMsg.content = QStringLiteral("Here is the conversation to summarize:\n\n") + conv;
+    userMsg.content = QStringLiteral("Here is the conversation to summarize:\n\n") + toSummarize;
     req.append(sysMsg);
     req.append(userMsg);
 

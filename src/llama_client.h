@@ -56,6 +56,7 @@ public:
     /// Résumé de contexte compacté à injecter en system prompt (après le SOUL)
     /// pour les requêtes normales. Vide = pas de contexte compacté.
     void setContextSummary(const QString &s) { m_contextSummary = s; }
+    QString contextSummary() const { return m_contextSummary; }
 
     /// Estime le nombre de tokens du contexte qui serait envoyé au modèle pour
     /// `messages` : system prompt (SOUL + tools desc + contextSummary) + tous
