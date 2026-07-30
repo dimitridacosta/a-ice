@@ -17,6 +17,7 @@
 #include <QScrollBar>
 #include <QScreen>
 #include <QGuiApplication>
+#include <QLocale>
 #include <QStyle>
 #include <QRegularExpression>
 #include <QKeyEvent>
@@ -557,23 +558,41 @@ void ChatWidget::showContextInfo()
     const QString provider = m_config.currentProviderId();
     const int tokens = m_client->estimateContextTokens(m_messages);
     const int nMsg = m_messages.size();
+    const QLocale loc;
 
-    QString s;
-    s += QStringLiteral("Modèle : %1 (%2) @ %3\n").arg(alias, mdl.name, provider);
-    s += QStringLiteral("  temp=%1  stream=%2  max_tokens(sortie)=%3\n")
-             .arg(mdl.temperature).arg(mdl.stream).arg(mdl.maxTokens);
-    s += QStringLiteral("Contexte : ~%1 tokens estimés (system + %2 messages) — heuristique chars/4\n")
-             .arg(tokens).arg(nMsg);
+    // Barre de progression ASCII (20 blocs) pour visualiser le % de fenêtre
+    // utilisée au premier coup d'œil.
+    auto bar = [](double pct) {
+        const int n = 20;
+        const int filled = qBound(0, static_cast<int>(qRound(pct / 100.0 * n)), n);
+        QString b;
+        for (int i = 0; i < n; ++i)
+            b += (i < filled) ? QChar(0x2588) : QChar(0x2591);  // █ / ▒
+        return b;
+    };
+
+    QString s = QStringLiteral("## 📊 Contexte\n\n");
+    s += QStringLiteral("**Modèle** — `%1` *(%2)* @ `%3`\n")
+             .arg(alias, mdl.name, provider);
+    s += QStringLiteral("`temp %1` · `%2` · `sortie max %3`\n\n")
+             .arg(mdl.temperature)
+             .arg(mdl.stream ? QStringLiteral("stream") : QStringLiteral("no stream"))
+             .arg(loc.toString(mdl.maxTokens));
+    s += QStringLiteral("**Contexte** — ~%1 tokens *(system + %2 messages · estimé chars/4)*\n\n")
+             .arg(loc.toString(tokens)).arg(nMsg);
+
     if (mdl.contextWindow > 0) {
         const double pct = tokens * 100.0 / mdl.contextWindow;
         const int restant = mdl.contextWindow - tokens;
-        s += QStringLiteral("  Fenêtre : %1 tokens → %2% utilisé, ~%3 restants")
-                 .arg(mdl.contextWindow).arg(pct, 0, 'f', 1).arg(restant);
+        s += QStringLiteral("**Fenêtre** — %1 tokens\n").arg(loc.toString(mdl.contextWindow));
+        s += QStringLiteral("`%1` %2 %% utilisé · %3 restants\n\n")
+                 .arg(bar(pct)).arg(QString::number(pct, 'f', 1)).arg(loc.toString(restant));
         if (tokens > mdl.contextWindow * 0.9)
-            s += QStringLiteral("  ⚠ proche du max — /compact pour réduire");
+            s += QStringLiteral("> ⚠️ Proche du max — `/compact` pour réduire.\n");
     } else {
-        s += QStringLiteral("  Fenêtre max : non configurée (ajouter context_window au modèle)");
+        s += QStringLiteral("> Fenêtre max **non configurée** — ajouter `context_window` au modèle.\n");
     }
+
     showSystemNote(s);
     qInfo() << "[a-ice] /context :" << tokens << "tokens," << nMsg << "messages, modèle"
              << mdl.name << "@" << provider;
