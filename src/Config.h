@@ -75,6 +75,7 @@ public:
         QString type;        // ex: "openai_compatible" — nature du backend
         QString apiUrl;      // ex: "http://localhost:18081/v1"
         QString promptFormat; // ex: "qwen"
+        QString apiKey;      // ex: token Ollama Cloud — injecté en Authorization: Bearer
         QList<Model> models;  // ordre du JSON préservé
     };
 

@@ -4,6 +4,7 @@
 //   - Schéma multi-providers : providers/models parsés, alias vs name,
 //     default_provider/default_model appliqués, api_url normalisée.
 //   - Champ provider "type" (et rétro-compat "name" pour le legacy).
+//   - Champ provider "api_key" (auth Bearer, ex: Ollama Cloud).
 //   - Schéma legacy (single provider/model) reconstruit en provider "default".
 //   - switchModel() : alias prioritaire, fallback sur le nom complet,
 //     changement de provider quand l'alias n'existe pas dans le courant,
@@ -60,9 +61,10 @@ int main(int argc, char *argv[])
         check(c.model().name == QStringLiteral("qwen36-28b-reap"),
               "defaults: model.name");
         check(c.apiUrl().endsWith('/'), "defaults: api_url normalisée (trailing /)");
+        check(c.provider().apiKey.isEmpty(), "defaults: pas d'api_key");
     }
 
-    // --- Schéma multi-providers (champ "type") ---
+    // --- Schéma multi-providers (champ "type" + "api_key") ---
     {
         QTemporaryDir dir;
         const QString json = QStringLiteral(
@@ -81,6 +83,7 @@ int main(int argc, char *argv[])
             "      \"type\": \"openai_compatible\",\n"
             "      \"api_url\": \"https://api.exemple.com/v1\",\n"
             "      \"prompt_format\": \"chatml\",\n"
+            "      \"api_key\": \"test-key-cloud\",\n"
             "      \"models\": {\n"
             "        \"gpt\": { \"name\": \"gpt-4o-mini\", \"temperature\": 0.7, \"max_tokens\": 16384, \"stream\": true }\n"
             "      }\n"
@@ -103,6 +106,7 @@ int main(int argc, char *argv[])
         check(c.provider().promptFormat == QStringLiteral("qwen"), "multi: prompt_format");
         check(c.providers().first().type == QStringLiteral("openai_compatible"),
               "multi: provider.type lu depuis 'type'");
+        check(c.provider().apiKey.isEmpty(), "multi: local n'a pas d'api_key");
 
         // switchModel par alias (même provider).
         QString msg;
@@ -121,6 +125,8 @@ int main(int argc, char *argv[])
         check(c.currentProviderId() == QStringLiteral("cloud"), "switch(gpt): provider=cloud");
         check(c.model().name == QStringLiteral("gpt-4o-mini"), "switch(gpt): name");
         check(c.apiUrl() == QStringLiteral("https://api.exemple.com/v1/"), "switch(gpt): api_url changée");
+        check(c.provider().apiKey == QStringLiteral("test-key-cloud"),
+              "switch(gpt): api_key du provider cloud");
 
         // switchModel introuvable.
         check(!c.switchModel(QStringLiteral("inexistant"), &msg), "switch(inexistant): échec");
@@ -128,7 +134,7 @@ int main(int argc, char *argv[])
               "switch(inexistant): message liste les alias dispo");
     }
 
-    // --- Schéma legacy (champ "name" -> type, rétro-compat) ---
+    // --- Schéma legacy (champ "name" -> type, rétro-compat) + api_key ---
     {
         QTemporaryDir dir;
         const QString json = QStringLiteral(
@@ -136,7 +142,8 @@ int main(int argc, char *argv[])
             "  \"provider\": {\n"
             "    \"name\": \"openai_compatible\",\n"
             "    \"api_url\": \"http://localhost:9999/v1\",\n"
-            "    \"prompt_format\": \"qwen\"\n"
+            "    \"prompt_format\": \"qwen\",\n"
+            "    \"api_key\": \"legacy-key\"\n"
             "  },\n"
             "  \"model\": {\n"
             "    \"name\": \"mon-modele\",\n"
@@ -153,6 +160,7 @@ int main(int argc, char *argv[])
         check(c.providers().first().id == QStringLiteral("default"), "legacy: provider id=default");
         check(c.providers().first().type == QStringLiteral("openai_compatible"),
               "legacy: type lu depuis 'name' (rétro-compat)");
+        check(c.provider().apiKey == QStringLiteral("legacy-key"), "legacy: api_key lue");
         check(c.currentProviderId() == QStringLiteral("default"), "legacy: provider courant");
         check(c.model().name == QStringLiteral("mon-modele"), "legacy: model.name");
         check(c.model().temperature == 0.5, "legacy: temperature");

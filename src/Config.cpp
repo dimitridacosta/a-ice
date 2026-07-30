@@ -134,6 +134,8 @@ bool Config::load(const QString &path)
                 p.apiUrl = po.value(QStringLiteral("api_url")).toString();
             if (po.contains(QStringLiteral("prompt_format")))
                 p.promptFormat = po.value(QStringLiteral("prompt_format")).toString();
+            if (po.contains(QStringLiteral("api_key")))
+                p.apiKey = po.value(QStringLiteral("api_key")).toString();
 
             const QJsonObject modelsObj = po.value(QStringLiteral("models")).toObject();
             for (auto mit = modelsObj.begin(); mit != modelsObj.end(); ++mit) {
@@ -178,6 +180,8 @@ bool Config::load(const QString &path)
                 p.apiUrl = provider.value(QStringLiteral("api_url")).toString();
             if (provider.contains(QStringLiteral("prompt_format")))
                 p.promptFormat = provider.value(QStringLiteral("prompt_format")).toString();
+            if (provider.contains(QStringLiteral("api_key")))
+                p.apiKey = provider.value(QStringLiteral("api_key")).toString();
 
             Model m;
             m.alias = model.value(QStringLiteral("name")).toString();

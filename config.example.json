@@ -23,6 +23,7 @@
       "type": "openai_compatible",
       "api_url": "https://api.exemple.com/v1",
       "prompt_format": "chatml",
+      "api_key": "",
       "models": {
         "gpt": {
           "name": "gpt-4o-mini",

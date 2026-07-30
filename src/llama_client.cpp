@@ -130,6 +130,17 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
     QNetworkRequest qnaRequest(requestUrl);
     qnaRequest.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
+    // Authentification provider (Ollama Cloud, etc.). Override via env
+    // AICE_API_KEY (prioritaire sur la config). Injecté en Bearer.
+    const QByteArray envKey = qgetenv("AICE_API_KEY");
+    const QString apiKey = !envKey.isEmpty() ? QString::fromUtf8(envKey)
+                                              : m_config.provider().apiKey;
+    if (!apiKey.isEmpty()) {
+        qnaRequest.setRawHeader("Authorization",
+                                QStringLiteral("Bearer %1").arg(apiKey).toUtf8());
+        qInfo() << "[a-ice] auth: Bearer (clé configurée)";
+    }
+
     QByteArray jsonStr = QJsonDocument(json).toJson(QJsonDocument::Compact);
     qInfo() << "[a-ice] → POST" << url << "(stream=" << m_config.model().stream
             << "tools=" << m_tools.size() << ")";

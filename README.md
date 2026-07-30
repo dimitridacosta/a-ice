@@ -72,6 +72,10 @@ A-ICE supporte un schéma **multi-providers / multi-modèles** : chaque provider
 **alias** (raccourci pour `/model`) et un **name** (nom réel envoyé à l'API).
 La clé du modèle dans l'objet `models` est son alias.
 
+Chaque provider accepte une `api_key` optionnelle (ex: token Ollama Cloud),
+injectée en `Authorization: Bearer`. Un override global est possible via la
+variable d'environnement `AICE_API_KEY` (prioritaire sur la config).
+
 ```json
 {
   "providers": {
