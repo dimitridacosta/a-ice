@@ -514,6 +514,10 @@ void ChatWidget::compactConversation()
     }
 
     // Formatte l'historique (sauf system) pour le LLM.
+    // NOTE : m_messages ne contient QUE les content (résultats) — jamais le
+    // thinking/reasoning, qui est affiché (ThinkingBlock) mais non persisté
+    // (cf. onThinkingChunk vs onContentChunk/onResponseComplete). La compaction
+    // envoie donc uniquement le résultat, pas la réflexion.
     QString conv;
     for (const auto &msg : m_messages) {
         if (msg.role == QLatin1String("system")) continue;
