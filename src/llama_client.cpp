@@ -204,25 +204,25 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
         messagesArray.append(sysObj);
     }
 
-    // Rafraîchit le contexte temporel (toutes les 15 min max) ; injecté comme
-    // un message system juste avant le dernier user (nouveau tour) — pas en
-    // mode compaction, pas pendant la boucle tools (le dernier message n'est pas
-    // un user). Ainsi le cache de l'historique (system de tête + messages
-    // précédents) est préservé : seul le time system + le dernier user sont
-    // nouveaux.
+    // Rafraîchit le contexte temporel (toutes les 15 min max). On le PRÉPEND au
+    // content du dernier user (nouveau tour) plutôt que d'injecter un message
+    // system séparé : beaucoup de chat templates (qwen, etc.) ignorent les
+    // messages system au MILIEU de la conversation. Prépendre au user garantit
+    // que le modèle le voit, sans casser le cache (le dernier user est nouveau
+    // à chaque tour, donc jamais caché — son contenu peut changer sans
+    // invalider le prefix system de tête + historique).
     const bool injectTime = !m_summarizing;
     if (injectTime)
         refreshTimeContext();
     const int nMsg = messages.size();
     for (int i = 0; i < nMsg; ++i) {
+        QJsonObject obj = messages[i].toJson();
         if (injectTime && !m_timeContext.isEmpty()
             && i == nMsg - 1 && messages[i].role == QLatin1String("user")) {
-            QJsonObject timeObj;
-            timeObj["role"] = QStringLiteral("system");
-            timeObj["content"] = m_timeContext;
-            messagesArray.append(timeObj);
+            const QString prev = obj.value(QStringLiteral("content")).toString();
+            obj["content"] = QStringLiteral("[time] %1\n\n").arg(m_timeContext) + prev;
         }
-        messagesArray.append(messages[i].toJson());
+        messagesArray.append(obj);
     }
 
     json["messages"] = messagesArray;
