@@ -1048,6 +1048,18 @@ void ChatWidget::scrollToBottom()
     // laisse lire tranquillement sans le renvoyer en bas à chaque chunk.
     if (!m_autoScroll)
         return;
+    // Force le layout du contenu à se recalculer (la bulle du bas vient de
+    // grandir) et propage la nouvelle hauteur au QScrollArea SYNCHRONE. Sans
+    // ça, setValue(maximum) utilise l'ancien maximum (layout pending) -> le
+    // viewport reste à l'ancienne position et coupe le bas des bulles -> effet
+    // accordéon (le texte disparaît une frame puis ré-expande au chunk suivant
+    // quand le maximum est enfin à jour).
+    if (auto *l = m_messagesContainer->layout())
+        l->activate();
+    const int vpW = m_scrollArea->viewport()->width();
+    const int contentH = qMax(m_scrollArea->viewport()->height(),
+                              m_messagesContainer->sizeHint().height());
+    m_messagesContainer->resize(vpW, contentH);
     QScrollBar *bar = m_scrollArea->verticalScrollBar();
     bar->setValue(bar->maximum());
 }
