@@ -103,12 +103,11 @@ int LlamaClient::estimateContextTokens(const QList<ChatMessage> &messages) const
             sys += QStringLiteral("\n\n");
         sys += m_contextSummary;
     }
-    if (!m_timeLog.isEmpty()) {
-        if (!sys.trimmed().isEmpty())
-            sys += QStringLiteral("\n\n");
-        sys += m_timeLog;
-    }
     int chars = sys.size();
+    // La note time est injectée comme un message user APRÈS le dernier user
+    // (cf. makeRequest) — on la compte comme un message.
+    if (!m_timeContext.isEmpty())
+        chars += m_timeContext.size() + 16;  // role + [system] prefix + content
     for (const auto &msg : messages) {
         chars += msg.role.size() + 4;   // "role": ... overhead
         chars += msg.content.size();
@@ -120,23 +119,23 @@ int LlamaClient::estimateContextTokens(const QList<ChatMessage> &messages) const
 
 void LlamaClient::refreshTimeContext()
 {
-    // LOG temporel cumulatif : à chaque rappel (premier envoi, jour changé, ou
-    // > 15 min), on AJOUTE une entrée au log (on ne modifie jamais l'existant).
-    // Le début du system ne change jamais -> cache préservé entre deux rappels.
-    // Tokens minimaux : juste l'heure ; date si le jour a changé.
+    // Heure courante, rafraîchie seulement si : premier envoi, jour changé, ou
+    // > 15 min. Non cumulée — c'est l'heure courante (à 15 min près). Injectée
+    // comme une note APRÈS le dernier user (cf. makeRequest), jamais dans le
+    // system ni l'historique, pour ne jamais modifier le passé (cache).
     const QDateTime now = QDateTime::currentDateTime();
     const bool firstReminder = !m_lastTimeReminder.isValid();
     const bool dayChanged = !firstReminder && (now.date() != m_lastTimeReminder.date());
     const bool stale = firstReminder || dayChanged
         || (now > m_lastTimeReminder.addSecs(15 * 60));
     if (!stale)
-        return;  // < 15 min, même jour : on ne touche pas au log (cache préservé).
-    const QString entry = (firstReminder || dayChanged)
-        ? now.toString(QStringLiteral("yyyy-MM-dd HH:mm"))
-        : now.toString(QStringLiteral("HH:mm"));
-    m_timeLog = m_timeLog.isEmpty()
-        ? QStringLiteral("Times: ") + entry
-        : m_timeLog + QStringLiteral(", ") + entry;
+        return;  // < 15 min, même jour : on garde l'heure courante (tokens min).
+    m_timeContext = (firstReminder || dayChanged)
+        ? QStringLiteral("Current date: %1, time: %2")
+              .arg(now.toString(QStringLiteral("yyyy-MM-dd")),
+                   now.toString(QStringLiteral("HH:mm")))
+        : QStringLiteral("Current time: %1")
+              .arg(now.toString(QStringLiteral("HH:mm")));
     m_lastTimeReminder = now;
 }
 
@@ -190,15 +189,9 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
                 sys += QStringLiteral("\n\n");
             sys += m_contextSummary;
         }
-        // LOG temporel cumulé : ajouté à la fin du system. Cumulatif (on
-        // ajoute, on ne modifie jamais) -> le début du system ne change pas,
-        // le cache est préservé entre deux rappels (15 min). Rafraîchi ici.
-        refreshTimeContext();
-        if (!m_timeLog.isEmpty()) {
-            if (!sys.trimmed().isEmpty())
-                sys += QStringLiteral("\n\n");
-            sys += m_timeLog;
-        }
+        // NB : le time n'est PAS dans le system de tête — il est injecté comme
+        // une note APRÈS le dernier user (cf. boucle) pour ne JAMAIS modifier le
+        // passé (system + historique) et préserver le cache de prompt.
     }
     if (!sys.trimmed().isEmpty()) {
         QJsonObject sysObj;
@@ -207,8 +200,27 @@ void LlamaClient::makeRequest(const QList<ChatMessage> &messages)
         messagesArray.append(sysObj);
     }
 
-    for (const auto &msg : messages) {
-        messagesArray.append(msg.toJson());
+    // Time : rafraîchi (15 min max) puis injecté comme un message role=user
+    // APRÈS le dernier user, avec un préfixe [system] clair pour que l'agent
+    // comprenne que c'est une note système (le chat template ignore les vrais
+    // role=system au milieu). Comme ça le passé (system + historique) ne
+    // change JAMAIS → cache de prompt préservé ; seul le dernier user + la note
+    // sont neufs (recomputés). Pas en mode compaction, pas en boucle tools
+    // (dernier message non user → on n'injecte pas, pour ne pas casser la
+    // séquence tool_calls → tool).
+    const bool injectTime = !m_summarizing;
+    if (injectTime)
+        refreshTimeContext();
+    const int nMsg = messages.size();
+    for (int i = 0; i < nMsg; ++i) {
+        messagesArray.append(messages[i].toJson());
+        if (injectTime && !m_timeContext.isEmpty()
+            && i == nMsg - 1 && messages[i].role == QLatin1String("user")) {
+            QJsonObject noteObj;
+            noteObj["role"] = QStringLiteral("user");
+            noteObj["content"] = QStringLiteral("[system] %1").arg(m_timeContext);
+            messagesArray.append(noteObj);
+        }
     }
 
     json["messages"] = messagesArray;
