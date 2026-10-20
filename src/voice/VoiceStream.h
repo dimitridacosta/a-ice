@@ -53,12 +53,20 @@ public:
     void setEnabled(bool on) { m_enabled = on; }
     bool enabled() const { return m_enabled; }
 
+    /// Chemin du socket serveur (override pour tests avec faux serveur in-process).
+    void setSocketPath(const QString &path) { m_socketPath = path; }
+    /// Désactive le démarrage auto du serveur (tests : ne jamais spawn le vrai ddvoice).
+    void setAutoSpawnEnabled(bool on) { m_autoSpawnEnabled = on; }
+
     /// Diagnostic court (pour /voice).
     QString statusLine() const;
 
 signals:
     /// Un chunk a été envoyé au serveur (pour logs/debug).
     void chunkSent(int chars, double estimatedSeconds);
+    /// Le serveur TTS est mort EN PLEIN stream (il avait confirmé des envois puis
+    /// ne répond plus) : le stream est abandonné, plus de requeue (anti-blanc).
+    void serverLost();
 
 private:
     /// Envoie un chunk au serveur (démarrage auto si le serveur ne répond pas).
@@ -74,6 +82,9 @@ private:
     bool serverStatus(bool &reading, int &queued, double *avanceServeur = nullptr) const;
     /// Connecte au socket (bloquant, timeout court).
     bool ensureConnected() const;   // mutable m_socket (reconnexion transparente)
+    /// Le serveur est injoignable : si il avait confirmé des envois (mort en plein
+    /// stream), on marque le stream cassé (plus de requeue) et on émet serverLost.
+    void handleServerUnreachable();
 
     mutable QLocalSocket *m_socket = nullptr;   // créé à la volée (parent = nullptr, deleteLater au destructeur)
     QString m_socketPath;
@@ -82,6 +93,9 @@ private:
     QString m_buffer;              // texte pas encore envoyé
     bool m_enabled = false;
     bool m_firstChunkSent = false; // le premier son est-il sorti ?
+    bool m_serverConfirmed = false; // le serveur a confirmé ≥1 envoi (sinon : jamais démarré)
+    bool m_streamBroken = false;   // serveur mort en plein stream → on abandonne le tour
+    bool m_autoSpawnEnabled = true; // false en test : ne jamais lancer le vrai serveur
     qint64 m_charsQueued = 0;      // total chars envoyés non encore "consommés"
     double m_estSecondsQueued = 0; // durée audio estimée envoyée au serveur
     QElapsedTimer m_clock;         // temps depuis le premier chunk

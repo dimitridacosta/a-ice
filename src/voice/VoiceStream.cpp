@@ -54,23 +54,27 @@ double VoiceStream::audioLead() const
 {
     if (!m_firstChunkSent || !m_clock.isValid())
         return 0.0;
-    // Avance = durée audio estimée envoyée au serveur - temps écoulé depuis
-    // le début du flux. Le serveur lit en continu dès qu'il a des chunks,
-    // donc le temps écoulé ≈ temps de lecture (au TTFA près, négligeable).
-    const double elapsed = m_clock.elapsed() / 1000.0;
-    double lead = m_estSecondsQueued - elapsed;
-    // Le serveur mesure l'avance RÉELLE de sa lecture (audio écrit écoulé + chunks
-    // en attente). C'est la seule mesure fiable : l'estimation locale dérive dès
-    // qu'un tour de tools interrompt le flux.
+
+    // Mesure PRINCIPALE : l'avance RÉELLE de la lecture côté serveur (audio déjà
+    // écrit + chunks en file). Voix_serveur.py renvoie TOUJOURS "avance_audio_s"
+    // dans le statut → disponible dès que le serveur répond. C'est la seule mesure
+    // fiable : elle ne dérive jamais, même quand un tour d'outils interrompt le flux.
     bool reading = false;
     int queued = 0;
     double avanceServeur = -1.0;
-    if (serverStatus(reading, queued, &avanceServeur)) {
-        if (avanceServeur >= 0.0)
-            lead = avanceServeur;
-        else if (!reading && queued == 0)
-            lead = 0.0;
-    }
+    if (serverStatus(reading, queued, &avanceServeur) && avanceServeur >= 0.0)
+        return std::max(0.0, avanceServeur);
+
+    // Estimation locale (m_estSecondsQueued) : simple FALLBACK, conservé uniquement
+    // pour les deux cas où le serveur ne fournit pas de mesure exploitable :
+    //   1) serveur injoignable (chargement ~9 s, redémarrage) → on ne peut pas savoir ;
+    //   2) serveur joignable mais "avance_audio_s" absent/négatif (JSON inattendu).
+    // C'est la seule source de dérive possible ; dès que le serveur répond, la
+    // mesure serveur gagne (branche du dessus) et l'estimation est ignorée.
+    const double elapsed = m_clock.elapsed() / 1000.0;
+    double lead = m_estSecondsQueued - elapsed;
+    if (!reading && queued == 0)
+        lead = 0.0;   // file vide et pas de lecture : pas d'avance fantôme
     return std::max(0.0, lead);
 }
 
@@ -121,7 +125,7 @@ bool VoiceStream::ensureConnected() const
             "/projects/ai/projects/faster-qwen3-tts");
         const QString py = base + QStringLiteral("/.venv/bin/python");
         const QString srv = base + QStringLiteral("/voix_serveur.py");
-        if (QFile::exists(py) && QFile::exists(srv)) {
+        if (m_autoSpawnEnabled && QFile::exists(py) && QFile::exists(srv)) {
             // Verrou anti-avalanche : chaque chunk qui arrive pendant le
             // chargement (8 s + warmup) repartait un spawn → OOM CUDA.
             // 1 seule tentative toutes les 30 s ; le serveur finira par
@@ -263,9 +267,13 @@ void VoiceStream::flush()
 void VoiceStream::sendChunk(const QString &text)
 {
     if (!ensureConnected()) {
-        // Serveur en chargement : on remet le chunk en tête de buffer, le
-        // prochain flush (heartbeat 120 ms) retentera. Rien n'est perdu.
-        requeue(text);
+        // Serveur injoignable : si il avait déjà confirmé des envois, c'est une
+        // MORT en plein stream → on abandonne le tour (le requeue protège l'envoi,
+        // pas la lecture déjà lancée : on ne peut pas la rattraper). Sinon (serveur
+        // jamais démarré) : on remet le chunk en tête, le heartbeat retentera.
+        handleServerUnreachable();
+        if (!m_streamBroken)
+            requeue(text);
         return;
     }
     bool reading = false;
@@ -287,12 +295,31 @@ void VoiceStream::sendChunk(const QString &text)
     const double est = text.size() / CHARS_PER_SECOND;
     m_estSecondsQueued += est;
     m_charsQueued += text.size();
+    m_serverConfirmed = true;   // le serveur est vivant : il a reçu ce chunk
     if (!m_firstChunkSent) {
         m_firstChunkSent = true;
         m_clock.start();
     }
     emit chunkSent(text.size(), est);
     qCDebug(lcVoiceStream) << "chunk" << text.size() << "car ≈" << est << "s · avance ≈" << audioLead() << "s";
+}
+
+void VoiceStream::handleServerUnreachable()
+{
+    // Distinction clé :
+    //  - serveur JAMAIS confirmé (m_serverConfirmed == false) : il n'a juste pas
+    //    encore démarré (chargement ~9 s) → ce n'est pas une "mort", on garde le
+    //    requeue (rien n'est perdu, le heartbeat retentera).
+    //  - serveur DÉJÀ confirmé puis injoignable : il est mort EN PLEIN stream.
+    //    La lecture en cours est perdue (on ne peut pas la rattraper) ; empiler des
+    //    chunks qu'aucun serveur ne lira = buffer qui grossit pour rien. On abandonne
+    //    le tour : m_streamBroken + serverLost (une seule fois).
+    if (m_serverConfirmed && !m_streamBroken) {
+        m_streamBroken = true;
+        m_buffer.clear();   // on ne garde pas de texte qu'aucun serveur ne lira
+        qWarning() << "[voice] serveur ddvoice injoignable en plein stream → tour abandonné";
+        emit serverLost();
+    }
 }
 
 // --- API -------------------------------------------------------------------
@@ -307,6 +334,8 @@ void VoiceStream::feed(const QString &chunk)
 {
     if (!m_enabled || chunk.isEmpty())
         return;
+    if (m_streamBroken)
+        return;   // serveur mort ce tour : on n'accumule plus de texte inutile
     m_buffer += chunk;
     if (!m_flushTimer.isActive())
         m_flushTimer.start();
@@ -319,7 +348,7 @@ void VoiceStream::finish()
     if (!m_buffer.trimmed().isEmpty()) {
         const QString chunk = m_buffer.trimmed();
         m_buffer.clear();
-        if (m_enabled)
+        if (m_enabled && !m_streamBroken)
             sendChunk(chunk);
     } else {
         m_buffer.clear();
@@ -336,6 +365,10 @@ void VoiceStream::stop()
     m_charsQueued = 0;
     m_estSecondsQueued = 0.0;
     m_clock.invalidate();
+    m_streamBroken = false;
+    // Un stop n'est PAS une mort serveur : on ne doit pas émettre serverLost si le
+    // serveur est déjà parti. On neutralise la "confirmation" avant de tenter le stop.
+    m_serverConfirmed = false;
     // Stop immédiat côté serveur : file vidée + son coupé.
     if (ensureConnected()) {
         QJsonObject req;
@@ -353,6 +386,8 @@ void VoiceStream::reset()
     m_charsQueued = 0;
     m_estSecondsQueued = 0.0;
     m_clock.invalidate();
+    m_streamBroken = false;
+    m_serverConfirmed = false;
     // Nouveau tour : le verrou anti-avalanche se réarme (un serveur mis en
     // veille depuis le dernier tour doit pouvoir repartir sans délai).
     m_spawnAttempted = false;
@@ -361,8 +396,11 @@ void VoiceStream::reset()
 
 QString VoiceStream::statusLine() const
 {
+    const QString etat = !m_enabled ? QStringLiteral("off")
+                       : m_streamBroken ? QStringLiteral("perdu")
+                                        : QStringLiteral("on");
     return QStringLiteral("voice %1 · buffer %2 car · avance ≈ %3 s")
-        .arg(m_enabled ? QStringLiteral("on") : QStringLiteral("off"))
+        .arg(etat)
         .arg(m_buffer.size())
         .arg(QString::number(audioLead(), 'f', 1));
 }

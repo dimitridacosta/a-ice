@@ -28,6 +28,7 @@
 #include <QTextBlock>
 #include <QTextLayout>
 #include <QAbstractTextDocumentLayout>
+#include <QSettings>
 
 namespace {
 // Region arrondie (polygone issu d'un QPainterPath) — utilisée pour le blur
@@ -125,6 +126,16 @@ void ChatWidget::setupVoice()
                 // des prochains tours, le son suit le contenu, pas les tools).
                 m_voice->finish();
             });
+    // Serveur TTS mort en plein stream : on prévient une fois (VoiceStream a
+    // abandonné le tour, plus de requeue → pas d'empilement fantôme).
+    connect(m_voice.data(), &VoiceStream::serverLost, this, [this]() {
+        showSystemNote(QStringLiteral("🔇 Serveur voix injoignable en cours de lecture — "
+                                     "tour vocal abandonné. Relance /voice on (ou ddvoice) pour reprendre."));
+    });
+
+    // Persistance /voice on entre sessions (~/.config/a-ice/a-ice.conf, [voice]).
+    QSettings settings(QStringLiteral("a-ice"), QStringLiteral("a-ice"));
+    m_voice->setEnabled(settings.value(QStringLiteral("voice/enabled"), false).toBool());
 }
 
 ChatWidget::~ChatWidget() = default;
@@ -809,15 +820,18 @@ bool ChatWidget::handleVoiceCommand(const QString &arg)
         // Off immédiat : son en cours coupé + file serveur vidée + buffer local.
         m_voice->stop();
         m_voice->setEnabled(false);
-        // Si une génération tourne, on l'interrompt aussi (cohérence : plus de
-        // voix = plus de texte en cours qui arriverait pour la voix suivante).
-        if (m_isTyping || m_interruptRequested == false) {
-            if (m_isTyping) {
-                onStopClicked();
-            }
-        }
+        // Si (et seulement si) une génération est en cours, on l'interrompt :
+        // couper la voix ne doit pas laisser arriver du texte qui repartirait
+        // dans la voix suivante. Pas de génération → rien à interrompre.
+        if (m_isTyping)
+            onStopClicked();
         showSystemNote(QStringLiteral("🔇 Voix coupée — génération interrompue s'il y en avait une."));
     }
+
+    // Persistance de l'état entre sessions (relu au prochain démarrage, cf. setupVoice).
+    QSettings settings(QStringLiteral("a-ice"), QStringLiteral("a-ice"));
+    settings.setValue(QStringLiteral("voice/enabled"), on);
+
     qInfo() << "[a-ice] /voice" << (on ? "on" : "off") << "·" << m_voice->statusLine();
     return true;
 }
