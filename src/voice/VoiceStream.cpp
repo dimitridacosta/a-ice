@@ -10,8 +10,12 @@
 Q_LOGGING_CATEGORY(lcVoiceStream, "aice.voice")
 
 // --- paramètres du chunker adaptatif ----------------------------------------
-// Débit de parole français : ~15 caractères par seconde d'audio (voix posée).
-static constexpr double CHARS_PER_SECOND = 15.0;
+// Débit de parole mesuré sur la voix mymy (logs ddvoice 2026-10-20) :
+// 16.0–18.4 car/s selon les phrases. On prend le HAUT de la plage :
+// surestimer le débit = sous-estimer l'avance audio = chunks plus courts
+// et plus fréquents = anti-blanc (le pire cas est un silence, pas un
+// chunk un peu petit).
+static constexpr double CHARS_PER_SECOND = 18.5;
 // Avance cible : le TTS doit avoir de la marge (il est RTF ~0.3, il creuse vite).
 static constexpr double LEAD_COMFORT_S = 2.0;   // au-dessus → on allonge les chunks
 static constexpr double LEAD_LOW_S     = 0.8;   // en dessous → chunk court (virgule)
@@ -136,6 +140,30 @@ void VoiceStream::flush()
     if (!m_enabled || m_buffer.isEmpty())
         return;
 
+    // Filet anti-blanc : stretch sans AUCUNE ponctuation coupable (bloc de
+    // code, URL, énumération sans respiration…) → on coupe en dur à
+    // EMERGENCY_CUT_CHARS plutôt que de laisser la lecture arriver à sec.
+    static constexpr int EMERGENCY_CUT_CHARS = 500;
+    if (m_buffer.size() > EMERGENCY_CUT_CHARS) {
+        bool hasCut = false;
+        for (int i = 0; i < EMERGENCY_CUT_CHARS; ++i) {
+            const QChar ch = m_buffer.at(i);
+            const bool punct = ch == QLatin1Char('.') || ch == QLatin1Char('!')
+                || ch == QLatin1Char('?') || ch == u'…' || ch == QLatin1Char(',');
+            const int next = i + 1;
+            if (punct && (next >= m_buffer.size() || m_buffer.at(next).isSpace())) {
+                hasCut = true;
+                break;
+            }
+        }
+        if (!hasCut) {
+            const QString chunk = m_buffer.left(EMERGENCY_CUT_CHARS);
+            m_buffer.remove(0, EMERGENCY_CUT_CHARS);
+            sendChunk(chunk.trimmed());
+            return;
+        }
+    }
+
     const double lead = audioLead();
     const bool warm = m_firstChunkSent && lead > LEAD_COMFORT_S;
 
@@ -182,8 +210,13 @@ void VoiceStream::flush()
             const QChar c = m_buffer.at(i);
             if (c == QLatin1Char('.') || c == QLatin1Char('!') ||
                 c == QLatin1Char('?') || c == u'…') {
-                lastStop = i;
-                break;
+                // Uniquement si suivi d'un espace (jamais au milieu d'un
+                // nombre "3.14" ou d'une URL) — même règle que le serveur.
+                const int next = i + 1;
+                if (next >= m_buffer.size() || m_buffer.at(next).isSpace()) {
+                    lastStop = i;
+                    break;
+                }
             }
         }
         if (lastStop >= MIN_CHUNK_CHARS) {
