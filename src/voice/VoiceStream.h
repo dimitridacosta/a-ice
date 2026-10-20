@@ -82,6 +82,11 @@ private:
     bool serverStatus(bool &reading, int &queued, double *avanceServeur = nullptr) const;
     /// Connecte au socket (bloquant, timeout court).
     bool ensureConnected() const;   // mutable m_socket (reconnexion transparente)
+    /// Connexion neuve pour UNE requête. Le protocole est « 1 ligne = 1 requête » et
+    /// le serveur clôt après chaque réponse : un poll « statut » consomme donc la
+    /// connexion, et écrire la requête suivante dessus l'enverrait dans un socket
+    /// fermé — sans erreur côté client (la voix disparait silencieusement).
+    bool connexionFraiche() const;
     /// Le serveur est injoignable : si il avait confirmé des envois (mort en plein
     /// stream), on marque le stream cassé (plus de requeue) et on émet serverLost.
     void handleServerUnreachable();

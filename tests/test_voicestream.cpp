@@ -45,6 +45,10 @@ public:
     QStringList receivedTexts() const { QMutexLocker lk(&m_mutex); return m_received; }
 
     void stopServer() { m_stop = true; }
+    // Mode « protocole réel » : ddvoice clôt la connexion après chaque requête.
+    // Sans cette option, le faux serveur lit plusieurs requêtes par connexion et
+    // ne reproduit donc pas le comportement qui a fait perdre les chunks en prod.
+    void setSingleShot(bool v) { m_singleShot = v; }
 
 protected:
     void run() override
@@ -65,6 +69,8 @@ protected:
                 for (const QByteArray &line : raw.split('\n')) {
                     if (line.trimmed().isEmpty())
                         continue;
+                    if (m_singleShotHandled && m_singleShot)
+                        break;   // une seule requête, puis on ferme (comme ddvoice)
                     const QJsonObject obj = QJsonDocument::fromJson(line).object();
                     if (obj.value(QStringLiteral("action")).toString() == QStringLiteral("statut")) {
                         QJsonArray attente;
@@ -87,10 +93,14 @@ protected:
                             m_received.append(t);
                         }
                     }
+                    m_singleShotHandled = true;   // « 1 requête = 1 connexion »
                 }
+                if (m_singleShot && m_singleShotHandled)
+                    break;                        ///ddvoice ferme après la réponse
             }
             sock->close();
             delete sock;
+            m_singleShotHandled = false;
         }
         server.close();
     }
@@ -102,6 +112,8 @@ private:
     QStringList m_received;
     int m_queued = 0;
     double m_avance = 0.0;
+    bool m_singleShot = false;
+    bool m_singleShotHandled = false;
     std::atomic<bool> m_stop{false};
 };
 
@@ -132,6 +144,7 @@ public:
     void setAvance(double a) { m_srv.setAvance(a); }
     QStringList receivedTexts() const { return m_srv.receivedTexts(); }
     void killServer() { m_srv.stopServer(); m_srv.quit(); m_srv.wait(2000); }
+    void singleShot() { m_srv.setSingleShot(true); }   // 1 requête = 1 connexion
 
 private:
     FakeServerThread m_srv;
@@ -150,6 +163,7 @@ private slots:
     void backpressureHoldsChunkLocal();
     void serverLostMidStreamAbandonsTurn();
     void streamRecoversAfterServerLost();
+    void statutPollDoesNotStealTheChunk();
 
 private:
     // VoiceStream branché sur le faux serveur, auto-spawn coupé (jamais de vrai ddvoice).
@@ -159,6 +173,17 @@ private:
         v->setSocketPath(srv.path());
         v->setAutoSpawnEnabled(false);
         return v;
+    }
+
+    // Chemin de socket volontairement absent : les tests « sans serveur » ne doivent
+    // JAMAIS toucher le vrai ddvoice.sock (sans ça, un v.stop() de test vide la file
+    // du serveur en production et coupe le son en cours de conversation).
+    static QString cheminSansServeur()
+    {
+        QTemporaryDir dir;
+        const QString p = dir.filePath(QStringLiteral("ddvoice-absent.sock"));
+        QLocalServer::removeServer(p);
+        return p;
     }
 };
 
@@ -174,6 +199,7 @@ void TestVoiceStream::feedWithoutServerDoesNotCrash()
 {
     VoiceStream v;
     v.setEnabled(true);
+    v.setSocketPath(cheminSansServeur());   // ne jamais parler au vrai ddvoice
     v.setAutoSpawnEnabled(false);   // ne jamais lancer le vrai ddvoice pendant un test
     v.feed("Bonjour Dimitri, ceci est un test du module voix.");
     v.finish();     // flush forcé : le serveur absent → chunk perdu proprement
@@ -185,6 +211,7 @@ void TestVoiceStream::stopResetsState()
 {
     VoiceStream v;
     v.setEnabled(true);
+    v.setSocketPath(cheminSansServeur());   // ne jamais parler au vrai ddvoice
     v.setAutoSpawnEnabled(false);
     v.feed("Un texte assez long pour remplir le buffer du module voix.");
     v.stop();
@@ -319,6 +346,24 @@ void TestVoiceStream::streamRecoversAfterServerLost()
 
     QVERIFY2(!srv2.receivedTexts().isEmpty(),
              "le tour suivant n'a rien envoye : voix morte pour toute la conversation");
+}
+
+// Le vrai ddvoice clôt la connexion après chaque requête. sendChunk poll « statut »
+// (backpressure) puis écrit le « texte » : si la connexion n'est pas reprise, le
+// chunk part dans un socket fermé et la voix disparait sans aucune erreur.
+void TestVoiceStream::statutPollDoesNotStealTheChunk()
+{
+    FakeTtsServer srv;
+    srv.singleShot();
+    QVERIFY(srv.start());
+    auto v = makeStream(srv);
+    v->setEnabled(true);
+
+    v->feed(QStringLiteral("Bonjour Dimitri, voici un test du protocole."));
+    QTest::qWait(500);
+
+    QVERIFY2(!srv.receivedTexts().isEmpty(),
+             "chunk perdu : le poll « statut » a consommé la connexion du serveur");
 }
 
 QTEST_MAIN(TestVoiceStream)

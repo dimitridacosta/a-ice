@@ -80,7 +80,7 @@ double VoiceStream::audioLead() const
 
 bool VoiceStream::serverStatus(bool &reading, int &queued, double *avanceServeur) const
 {
-    if (!ensureConnected())
+    if (!connexionFraiche())
         return false;
     QJsonObject req;
     req.insert(QStringLiteral("action"), QStringLiteral("statut"));
@@ -150,6 +150,13 @@ bool VoiceStream::ensureConnected() const
             return false;
     }
     return true;
+}
+
+bool VoiceStream::connexionFraiche() const
+{
+    if (m_socket)
+        m_socket->disconnectFromServer();
+    return ensureConnected();
 }
 
 // --- découpage ---------------------------------------------------------------
@@ -251,8 +258,14 @@ void VoiceStream::flush()
         }
     }
 
-    if (cut <= 0)
+    if (cut <= 0) {
+        // Le module ne jette pas le texte : il attend une coupe exploitable.
+        // Sans cette trace, « la voix ne sort pas » est indistinguable de « le
+        // texte n'arrive jamais » (les seuls logs existants étaient post-envoi).
+        qCDebug(lcVoiceStream) << "pas de coupe · buffer" << m_buffer.size() << "car · cible"
+                               << target << "· avance" << lead << "· warm" << warm;
         return;
+    }
 
     QString chunk = m_buffer.left(cut);
     m_buffer.remove(0, cut);
@@ -289,6 +302,16 @@ void VoiceStream::sendChunk(const QString &text)
     }
     QJsonObject req;
     req.insert(QStringLiteral("texte"), text);
+    // Le poll « statut » ci-dessus a consommé la connexion : le serveur clôt après
+    // chaque réponse. Écrire ici sur la même connexion enverrait le chunk dans un
+    // socket fermé — sans aucune erreur côté client Qt : le chunk serait compté
+    // « envoyé » et la voix disparaîtrait en silence (bug observé en prod).
+    if (!connexionFraiche()) {
+        handleServerUnreachable();
+        if (!m_streamBroken)
+            requeue(text);
+        return;
+    }
     m_socket->write(QJsonDocument(req).toJson(QJsonDocument::Compact) + '\n');
     m_socket->flush();
 
@@ -345,6 +368,8 @@ void VoiceStream::feed(const QString &chunk)
 void VoiceStream::finish()
 {
     m_flushTimer.stop();
+    qCDebug(lcVoiceStream) << "finish · reste" << m_buffer.size() << "car · enabled"
+                           << m_enabled << "· streamBroken" << m_streamBroken;
     if (!m_buffer.trimmed().isEmpty()) {
         const QString chunk = m_buffer.trimmed();
         m_buffer.clear();
@@ -370,7 +395,7 @@ void VoiceStream::stop()
     // serveur est déjà parti. On neutralise la "confirmation" avant de tenter le stop.
     m_serverConfirmed = false;
     // Stop immédiat côté serveur : file vidée + son coupé.
-    if (ensureConnected()) {
+    if (connexionFraiche()) {
         QJsonObject req;
         req.insert(QStringLiteral("action"), QStringLiteral("stop"));
         m_socket->write(QJsonDocument(req).toJson(QJsonDocument::Compact) + '\n');
