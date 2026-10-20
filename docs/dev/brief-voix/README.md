@@ -30,7 +30,7 @@ joués par **ffplay** dès leur disponibilité (TTFA ~250-450 ms).
 | Module voix | `src/voice/VoiceStream.h` (108 l.) + `src/voice/VoiceStream.cpp` (431 l.) |
 | Branchements UI | `src/ChatWidget.cpp` → `setupVoice()` (appelée l.110, définie l.113), `/voice` → `handleVoiceCommand()` (l.805) |
 | Source du flux texte | `src/llama_client.cpp` → signal `contentChunk` (émit l.375/482/494/501) |
-| Tests (in-process, faux serveur) | `tests/test_voicestream.cpp` (370 l., 12 tests) → `QT_QPA_PLATFORM=offscreen build/test_voicestream` |
+| Tests (in-process, faux serveur) | `tests/test_voicestream.cpp` (15 tests) → `QT_QPA_PLATFORM=offscreen build/test_voicestream` |
 | Test protocole client ↔ serveur | `faster-qwen3-tts/test_protocol.py` — parle au **vrai** socket ; textes `silencieux` → synthétisés mais **pas joués** |
 | Serveur TTS (Python) | `~/projects/ai/projects/faster-qwen3-tts/voix_serveur.py` — **repo git** depuis le 20/10 (branche `main`, commit racine `de3411a`) |
 | CLI | `~/.local/bin/ddvoice` → symlink vers `faster-qwen3-tts/ddvoice` (enfile, statut, stop, extinction) |
@@ -57,14 +57,27 @@ que le client est vivant), mais `VoiceStream` ouvre **une connexion neuve par re
 connexion est encore ouverte » : voir l'incident ci-dessous.
 
 ## Logique VoiceStream (côté a-ice)
-- **Chunker adaptatif** : 1ᵉʳ chunk agressif ≤120 car (coupe à la virgule → TTFA perçu) ;
-  ensuite phrases puis paragraphes (`MAX_CHUNK_CHARS` = ≤1100 car ; le serveur redécoupe
-  au-delà de 1200 = `SEUIL_D_UN_COUP`).
-- **Constantes** (bloc en tête de `VoiceStream.cpp`, l.18-30) : `CHARS_PER_SECOND=18.5`
-  (débit mesuré mymy), `LEAD_COMFORT_S=2.0`, `LEAD_LOW_S=0.8`, `MAX_CHUNK_CHARS=1100`,
-  `FIRST_CHUNK_MAX=120`, `MIN_CHUNK_CHARS=24`, `FLUSH_INTERVAL_MS=120` (heartbeat).
-  ⚠️ `EMERGENCY_CUT_CHARS=500` (filet anti-blanc sans ponctuation) est **local à la
-  fonction de chunking** (l.164).
+- **Découpe hiérarchique — naturelle d'abord** (choix assumé du 21/10, `a66f599`) :
+  1. **fin de paragraphe** (ligne blanche, ou retour à la ligne en fin de buffer)
+  2. **fin de phrase** (`. ! ? …` suivi d'un espace ou d'une fin)
+  3. **virgule / `;` / `:`** — secours **seulement** si le texte s'empile au-delà de
+     `SECOURS_A_PARTIR_DE = 400` car sans aucune limite naturelle
+  4. **coupe dure à 500 car** — filet anti-blanc (bloc sans AUCUNE ponctuation : code,
+     URL, énumération)
+  Et si aucune limite naturelle n'existe encore sous 400 car : **on n'invente pas de
+  coupe**, on attend le heartbeat (120 ms) ; `finish()` enverra le reste à la fin du tour.
+  ⚠️ Ne pas « optimiser le TTFA » en recoupant plus petit : mesuré côté serveur, le
+  `premier_son_s` est de **0,29 s pour 14 car comme de 0,259 s pour 1022 car** (le moteur
+  synthétise en streaming intra-phrase). Couper à la virgule ne gagnait **rien** et
+  faisait seulement redémarrer la prosodie du modèle à chaque morceau — le reproche de
+  Dimitri (« ça sonne artificiel »). Chaque chunk = une reprise de synthèse = une couture.
+- **Constantes** (bloc en tête de `VoiceStream.cpp`, + 2 locales à `flush()`) :
+  `CHARS_PER_SECOND=18.5` (débit mesuré mymy), `MAX_CHUNK_CHARS=1100` (fenêtre de
+  recherche ; le serveur redécoupe lui-même au-delà de 1200 = `SEUIL_D_UN_COUP`),
+  `MIN_CHUNK_CHARS=24`, `FLUSH_INTERVAL_MS=120`, `SECOURS_A_PARTIR_DE=400`,
+  `COUPE_DURE_A_PARTIR_DE=500`. Supprimés le 21/10 : `FIRST_CHUNK_MAX`, `LEAD_COMFORT_S`,
+  `LEAD_LOW_S` — l'avance ne pilote plus la taille des chunks, elle reste la backpressure
+  de `sendChunk` et la mesure affichée (`audioLead()`, `statusLine()`).
 - **Backpressure** : lit `avance_audio_s` du serveur (mesure RÉELLE ; l'estimation locale
   dérive avec les tours d'outils). `queued ≥ 6` ou `avance > 10 s` → requeue local.
   Le **6 est une marge de sécurité sous `FILE_MAX_TEXTES = 8`** du serveur : être refusé
@@ -102,7 +115,8 @@ Vérifié : `cmake --build build` **sur l'hôte échoue** (ECM / Extra CMake Mod
   n'existe pas. 8 commits voix : `63fa4e4` (VoiceStream) → `99a65d2` (débit 18.5 + filet)
   → `421d7ed` (backpressure sur l'avance serveur) → `f9ad8e1` (faux serveur de test,
   `serverLost`, persistance `/voice`, `/voice off`) → `11e7df8` + `22a198e` (docs)
-  → `fb4ab81` (`m_voice->reset()` à chaque tour) → `12c328c` (connexion neuve par requête).
+  → `fb4ab81` (`m_voice->reset()` à chaque tour) → `12c328c` (connexion neuve par requête)
+  → `b42115f` (brief) → `a66f599` (découpe naturelle : paragraphe → phrase → virgule en secours).
 - Serveur : `faster-qwen3-tts` sur `main` = `de3411a` (commit racine) → `c599783`
   (multi-requêtes par connexion + journal fondé + `test_protocol.py`).
 - Untracked en sus : `src/voice/VoiceStream.cpp.bak-20261020` — ⚠️ **il diffère des blobs
@@ -179,7 +193,7 @@ connexion, contrairement au vrai → 10/10 verts alors que la production était 
   dans `handleVoiceCommand`, relue dans `setupVoice()`.
 
 ## Validation (comment savoir que le pipeline est vivant)
-1. `QT_QPA_PLATFORM=offscreen ./build/test_voicestream` → **`12 passed, 0 failed`**.
+1. `QT_QPA_PLATFORM=offscreen ./build/test_voicestream` → **`15 passed, 0 failed`**.
 2. Protocole client ↔ serveur (serveur lancé) : `.venv/bin/python test_protocol.py` →
    « Protocole OK : multi-requêtes et mono-requête sont servis ».
 3. `ddvoice --statut` → JSON avec `modele`, `attente`, `lecture`, `avance_audio_s`, `vram_go`.
@@ -227,8 +241,11 @@ connexion, contrairement au vrai → 10/10 verts alors que la production était 
     0 quand le jack est branché (normal) : le mixer n'était pas la cause du 21/10.
 15. `ss -xpe | grep ddvoice` ne montre rien ici → préférer `/run/user/1000/ddvoice.log`.
 16. Le 21/10 : `ddvoice --eteindre` n'a **pas** tué l'instance auto-spawnée par a-ice (il a
-    fallu un `kill`) — anomalie non creusée. Démarrage du serveur : `sox: command not found`
-    (dépendance de secours absente), sans effet sur le pipeline utilisé.
+    fallu un `kill`) — anomalie non creusée. Au démarrage du serveur : `sox: command not
+    found` (dépendance de secours absente), sans effet sur le pipeline utilisé.
+17. **Chunk court ≠ voix rapide** : le `premier_son_s` du serveur est le même à 14 car et
+    à 1022 car. Vouloir « gagner du TTFA » en coupant plus petit ne fait qu'ajouter des
+    coutures de prosodie. La naturalité se juge à l'oreille, la latence se lit dans le log.
 
 ## Pistes restantes (non bloquantes)
 - **Merger `voice` dans `main`** une fois la fonction validée à l'usage : le correctif
