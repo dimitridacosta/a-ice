@@ -59,18 +59,22 @@ double VoiceStream::audioLead() const
     // donc le temps écoulé ≈ temps de lecture (au TTFA près, négligeable).
     const double elapsed = m_clock.elapsed() / 1000.0;
     double lead = m_estSecondsQueued - elapsed;
-    // Recalage serveur : si sa file est vide et qu'il ne lit plus rien,
-    // l'avance réelle est ~0 (pas de réserve fantôme).
+    // Le serveur mesure l'avance RÉELLE de sa lecture (audio écrit écoulé + chunks
+    // en attente). C'est la seule mesure fiable : l'estimation locale dérive dès
+    // qu'un tour de tools interrompt le flux.
     bool reading = false;
     int queued = 0;
-    if (serverStatus(reading, queued)) {
-        if (!reading && queued == 0)
+    double avanceServeur = -1.0;
+    if (serverStatus(reading, queued, &avanceServeur)) {
+        if (avanceServeur >= 0.0)
+            lead = avanceServeur;
+        else if (!reading && queued == 0)
             lead = 0.0;
     }
     return std::max(0.0, lead);
 }
 
-bool VoiceStream::serverStatus(bool &reading, int &queued) const
+bool VoiceStream::serverStatus(bool &reading, int &queued, double *avanceServeur) const
 {
     if (!ensureConnected())
         return false;
@@ -95,6 +99,8 @@ bool VoiceStream::serverStatus(bool &reading, int &queued) const
     reading = obj.value(QStringLiteral("lecture")).toBool(false);
     // "attente" est une liste d'objets en attente.
     queued = obj.value(QStringLiteral("attente")).toArray().size();
+    if (avanceServeur)
+        *avanceServeur = obj.value(QStringLiteral("avance_audio_s")).toDouble(-1.0);
     return true;
 }
 
@@ -116,14 +122,22 @@ bool VoiceStream::ensureConnected() const
         const QString py = base + QStringLiteral("/.venv/bin/python");
         const QString srv = base + QStringLiteral("/voix_serveur.py");
         if (QFile::exists(py) && QFile::exists(srv)) {
-            const QByteArray run = qgetenv("XDG_RUNTIME_DIR");
-            const QString logPath = (run.isEmpty() ? QStringLiteral("/tmp")
-                                                   : QString::fromLocal8Bit(run))
-                                        + QStringLiteral("/ddvoice.log");
-            QProcess::startDetached(py, {srv, QStringLiteral("--inactivite"),
-                                         QStringLiteral("300")}, base,
-                                    nullptr);
-            qInfo() << "[voice] serveur ddvoice absent → démarrage (log :" << logPath << ")";
+            // Verrou anti-avalanche : chaque chunk qui arrive pendant le
+            // chargement (8 s + warmup) repartait un spawn → OOM CUDA.
+            // 1 seule tentative toutes les 30 s ; le serveur finira par
+            // écouter et les chunks suivants se connecteront.
+            if (!m_spawnAttempted || m_lastSpawnAttempt.elapsed() > 30000) {
+                const QByteArray run = qgetenv("XDG_RUNTIME_DIR");
+                const QString logPath = (run.isEmpty() ? QStringLiteral("/tmp")
+                                                       : QString::fromLocal8Bit(run))
+                                            + QStringLiteral("/ddvoice.log");
+                QProcess::startDetached(py, {srv, QStringLiteral("--inactivite"),
+                                             QStringLiteral("300")}, base,
+                                        nullptr);
+                m_lastSpawnAttempt.start();
+                qInfo() << "[voice] serveur ddvoice absent → démarrage (log :" << logPath << ")";
+            }
+            m_spawnAttempted = true;
         }
         // On retente une fois (le serveur met du temps à charger — les chunks
         // en attente partiront au prochain flush ; on ne bloque pas l'UI).
@@ -249,8 +263,21 @@ void VoiceStream::flush()
 void VoiceStream::sendChunk(const QString &text)
 {
     if (!ensureConnected()) {
-        qWarning() << "[voice] serveur injoignable — chunk perdu (" << text.size() << "car.)";
+        // Serveur en chargement : on remet le chunk en tête de buffer, le
+        // prochain flush (heartbeat 120 ms) retentera. Rien n'est perdu.
+        requeue(text);
         return;
+    }
+    bool reading = false;
+    int queued = 0;
+    double avanceServeur = -1.0;
+    if (serverStatus(reading, queued, &avanceServeur)) {
+        if (queued >= 6 || avanceServeur > 10.0) {
+            // Serveur engorgé : on n'empile pas. Le chunk reste dans le buffer,
+            // le heartbeat (120 ms) retentera dès que la lecture aura repris.
+            requeue(text);
+            return;
+        }
     }
     QJsonObject req;
     req.insert(QStringLiteral("texte"), text);
@@ -269,6 +296,13 @@ void VoiceStream::sendChunk(const QString &text)
 }
 
 // --- API -------------------------------------------------------------------
+void VoiceStream::requeue(const QString &text)
+{
+    m_buffer.prepend(text);
+    if (!m_flushTimer.isActive())
+        m_flushTimer.start();
+}
+
 void VoiceStream::feed(const QString &chunk)
 {
     if (!m_enabled || chunk.isEmpty())
@@ -319,6 +353,10 @@ void VoiceStream::reset()
     m_charsQueued = 0;
     m_estSecondsQueued = 0.0;
     m_clock.invalidate();
+    // Nouveau tour : le verrou anti-avalanche se réarme (un serveur mis en
+    // veille depuis le dernier tour doit pouvoir repartir sans délai).
+    m_spawnAttempted = false;
+    m_lastSpawnAttempt.invalidate();
 }
 
 QString VoiceStream::statusLine() const

@@ -63,17 +63,22 @@ signals:
 private:
     /// Envoie un chunk au serveur (démarrage auto si le serveur ne répond pas).
     void sendChunk(const QString &text);
+    /// Remet un chunk en tête de buffer (serveur pas prêt : on ne perd rien).
+    void requeue(const QString &text);
     /// Mesure l'avance estimée du TTS sur la lecture (secondes d'audio en réserve).
     double audioLead() const;
     /// Découpe et envoie ce qui est mûr dans le buffer.
     void flush();
-    /// Statut serveur (null si pas de réponse).
-    bool serverStatus(bool &reading, int &queued) const;
+    /// Statut serveur (false si pas de réponse). avanceServeur (optionnel) reçoit
+    /// l'avance de lecture MESURÉE côté serveur, en secondes d'audio.
+    bool serverStatus(bool &reading, int &queued, double *avanceServeur = nullptr) const;
     /// Connecte au socket (bloquant, timeout court).
     bool ensureConnected() const;   // mutable m_socket (reconnexion transparente)
 
     mutable QLocalSocket *m_socket = nullptr;   // créé à la volée (parent = nullptr, deleteLater au destructeur)
     QString m_socketPath;
+    mutable QElapsedTimer m_lastSpawnAttempt;   // verrou anti-avalanche : 1 spawn / 30 s max
+    mutable bool m_spawnAttempted = false;      // une tentative de spawn déjà faite
     QString m_buffer;              // texte pas encore envoyé
     bool m_enabled = false;
     bool m_firstChunkSent = false; // le premier son est-il sorti ?
