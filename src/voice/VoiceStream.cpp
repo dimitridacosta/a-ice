@@ -16,15 +16,10 @@ Q_LOGGING_CATEGORY(lcVoiceStream, "aice.voice")
 // et plus fréquents = anti-blanc (le pire cas est un silence, pas un
 // chunk un peu petit).
 static constexpr double CHARS_PER_SECOND = 18.5;
-// Avance cible : le TTS doit avoir de la marge (il est RTF ~0.3, il creuse vite).
-static constexpr double LEAD_COMFORT_S = 2.0;   // au-dessus → on allonge les chunks
-static constexpr double LEAD_LOW_S     = 0.8;   // en dessous → chunk court (virgule)
-// Plafond d'un chunk : le serveur redécoupe au-delà de 1200 chars (anti-dérive
-// AR de son côté) — on reste sous, paragraphes inclus.
+// Plafond d'un chunk : le serveur redécoupe lui-même au-delà de 1200 chars
+// (anti-dérive AR de son côté) — on reste sous, paragraphes inclus.
 static constexpr int MAX_CHUNK_CHARS = 1100;
-// Premier chunk : agressif, c'est lui qui porte le TTFA perçu.
-static constexpr int FIRST_CHUNK_MAX = 120;
-// Chunk "mûr" minimal : pas la peine d'envoyer 3 caractères.
+// Chunk « mûr » minimal : pas la peine d'envoyer 3 caractères.
 static constexpr int MIN_CHUNK_CHARS = 24;
 // Période du heartbeat flush (filet : ponctuation exotique, fin de stream).
 static constexpr int FLUSH_INTERVAL_MS = 120;
@@ -160,101 +155,97 @@ bool VoiceStream::connexionFraiche() const
 }
 
 // --- découpage ---------------------------------------------------------------
+namespace {
+// Le dernier retour à la ligne « de paragraphe » disponible (ligne blanche, ou
+// buffer qui se termine sur un saut de ligne). Rend la LONGUEUR du chunk, -1 sinon.
+int finDeParagraphe(const QString &buffer, int fenetre)
+{
+    const int from = qMin(fenetre, buffer.size()) - 1;
+    for (int i = from; i >= 1; --i) {
+        if (buffer.at(i) == QLatin1Char('\n') && buffer.at(i - 1).isSpace()) {
+            if (i + 1 >= MIN_CHUNK_CHARS)
+                return i + 1;
+        }
+    }
+    if (buffer.endsWith(QLatin1Char('\n')) && buffer.size() >= MIN_CHUNK_CHARS
+        && buffer.size() <= fenetre)
+        return buffer.size();
+    return -1;
+}
+
+// La dernière ponctuation « propre » (suivie d'un espace ou d'une fin de buffer,
+// jamais au milieu de « 3.14 » ni d'une URL — même règle que le serveur). Rend la
+// LONGUEUR du chunk, -1 sinon.
+int finDePhrase(const QString &buffer, const QString &ponctuations, int fenetre)
+{
+    const int from = qMin(fenetre, buffer.size()) - 1;
+    for (int i = from; i >= 0; --i) {
+        if (!ponctuations.contains(buffer.at(i)))
+            continue;
+        const int next = i + 1;
+        if (next < buffer.size() && !buffer.at(next).isSpace())
+            continue;
+        if (next < MIN_CHUNK_CHARS)
+            continue;
+        return next;
+    }
+    return -1;
+}
+} // namespace
+
 void VoiceStream::flush()
 {
     if (!m_enabled || m_buffer.isEmpty())
         return;
 
-    // Filet anti-blanc : stretch sans AUCUNE ponctuation coupable (bloc de
-    // code, URL, énumération sans respiration…) → on coupe en dur à
-    // EMERGENCY_CUT_CHARS plutôt que de laisser la lecture arriver à sec.
-    static constexpr int EMERGENCY_CUT_CHARS = 500;
-    if (m_buffer.size() > EMERGENCY_CUT_CHARS) {
-        bool hasCut = false;
-        for (int i = 0; i < EMERGENCY_CUT_CHARS; ++i) {
-            const QChar ch = m_buffer.at(i);
-            const bool punct = ch == QLatin1Char('.') || ch == QLatin1Char('!')
-                || ch == QLatin1Char('?') || ch == u'…' || ch == QLatin1Char(',');
-            const int next = i + 1;
-            if (punct && (next >= m_buffer.size() || m_buffer.at(next).isSpace())) {
-                hasCut = true;
-                break;
-            }
-        }
-        if (!hasCut) {
-            const QString chunk = m_buffer.left(EMERGENCY_CUT_CHARS);
-            m_buffer.remove(0, EMERGENCY_CUT_CHARS);
-            sendChunk(chunk.trimmed());
-            return;
-        }
+    // HIÉRARCHIE DES COUPES, de la plus naturelle à la moins naturelle :
+    //   1. fin de paragraphe (ligne blanche, ou retour à la ligne en fin de buffer)
+    //   2. fin de phrase (« . ! ? … » suivis d'un espace ou d'une fin)
+    //   3. virgule / point-virgule / deux-points : secours, seulement si le texte
+    //      s'empile sans rencontrer de limite naturelle
+    //   4. coupe dure : filet anti-blanc (bloc sans AUCUNE ponctuation — code,
+    //      URL, énumération…)
+    //
+    // La taille du chunk ne pilote plus le TTFA, et c'est assumé : mesuré côté
+    // serveur le 21/10, le « premier son » tombe à 0,29 s pour 14 car comme à
+    // 0,259 s pour 1022 car — le moteur synthétise en streaming intra-phrase.
+    // Les coupes agressives ne gagnaient donc RIEN et faisaient seulement
+    // redémarrer la prosodie du modèle à chaque morceau (« ça sonne artificiel »).
+    static constexpr int SECOURS_A_PARTIR_DE = 400;   // au-delà, une virgule devient acceptable
+    static constexpr int COUPE_DURE_A_PARTIR_DE = 500; // au-delà, on tranche même sans ponctuation
+
+    const QString forte = QStringLiteral(".!?…");
+    const QString souples = QStringLiteral(",;:");
+    int cut = -1;
+    const char *motif = "?";
+
+    // Cas le plus fréquent : la phrase (le paragraphe) vient justement de se finir.
+    const QChar dernier = m_buffer.at(m_buffer.size() - 1);
+    if (m_buffer.size() <= MAX_CHUNK_CHARS
+        && (dernier == QLatin1Char('\n') || forte.contains(dernier))) {
+        cut = m_buffer.size();
+        motif = "fin propre";
     }
 
-    const double lead = audioLead();
-    const bool warm = m_firstChunkSent && lead > LEAD_COMFORT_S;
-
-    // Taille visée :
-    //  - tout début : petit (premier son vite)
-    //  - avance faible : petit aussi (on ne peut pas se permettre d'attendre
-    //    la fin d'une longue phrase — on coupe à la virgule)
-    //  - avance confortable : long (phrases complètes, plusieurs phrases,
-    //    jusqu'au paragraphe entier si ≤ MAX_CHUNK_CHARS)
-    int target;
-    if (!m_firstChunkSent)
-        target = FIRST_CHUNK_MAX;
-    else if (lead < LEAD_LOW_S)
-        target = 90;   // coupe fine : virgule autorisée
-    else
-        target = MAX_CHUNK_CHARS;
-
-    // Cherche la meilleure coupe dans le buffer.
-    int cut = -1;
-
-    if (m_buffer.size() <= target) {
-        // Buffer entier sous le plafond : on l'envoie s'il est "mûr".
-        // Mûr = se termine par une ponctuation forte, ou (mode fin/virgule)
-        // contient une virgule, ou il déborde de partout (heartbeat).
-        const QLatin1String fin("!?…");
-        const QChar last = m_buffer.at(m_buffer.size() - 1);
-        const bool pointFinal = last == QLatin1Char('.') || fin.contains(last);
-        const bool virguleFin = last == QLatin1Char(',') || last == QLatin1Char(';')
-                                || last == QLatin1Char(':');
-        if (pointFinal || virguleFin
-            || (warm && m_buffer.size() >= MIN_CHUNK_CHARS)) {
-            cut = m_buffer.size();
-        } else if (m_buffer.size() >= MAX_CHUNK_CHARS) {
-            // Trop long sans aucune ponctuation → coupe forcée (filet).
-            cut = MAX_CHUNK_CHARS;
-        }
-    } else {
-        // Buffer plus long que la cible : coupe à la dernière ponctuation
-        // forte AVANT la cible (jamais à la virgule une fois chaud —
-        // on préfère légèrement dépasser la cible que couper au milieu).
-        QStringView v(m_buffer);
-        int lastStop = -1;
-        for (int i = std::min<int>(target, m_buffer.size()) - 1; i >= 0; --i) {
-            const QChar c = m_buffer.at(i);
-            if (c == QLatin1Char('.') || c == QLatin1Char('!') ||
-                c == QLatin1Char('?') || c == u'…') {
-                // Uniquement si suivi d'un espace (jamais au milieu d'un
-                // nombre "3.14" ou d'une URL) — même règle que le serveur.
-                const int next = i + 1;
-                if (next >= m_buffer.size() || m_buffer.at(next).isSpace()) {
-                    lastStop = i;
-                    break;
-                }
-            }
-        }
-        if (lastStop >= MIN_CHUNK_CHARS) {
-            cut = lastStop + 1;
-        } else if (!warm) {
-            // Froid : première virgule après la cible (agressif, TTFA).
-            const int comma = m_buffer.indexOf(QLatin1Char(','));
-            if (comma >= 0 && comma < target * 2)
-                cut = comma + 1;
-        } else {
-            // Chaud sans point dans la fenêtre : on attend (le heartbeat
-            // rappellera ; paragraphe long = pas de coupe à la virgule).
+    if (cut < 0) {
+        if (const int p = finDeParagraphe(m_buffer, MAX_CHUNK_CHARS); p >= 0) {
+            cut = p;
+            motif = "paragraphe";
+        } else if (const int s = finDePhrase(m_buffer, forte, MAX_CHUNK_CHARS); s >= 0) {
+            cut = s;
+            motif = "phrase";
+        } else if (m_buffer.size() < SECOURS_A_PARTIR_DE) {
+            // Pas de limite naturelle et le texte reste raisonnable : on n'invente
+            // PAS de coupe. Le heartbeat (120 ms) rappellera, la phrase se finira.
+            qCDebug(lcVoiceStream) << "en attente d'une limite naturelle · buffer"
+                                   << m_buffer.size() << "car";
             return;
+        } else if (const int v = finDePhrase(m_buffer, souples, MAX_CHUNK_CHARS); v >= 0) {
+            cut = v;
+            motif = "virgule (secours)";
+        } else {
+            cut = COUPE_DURE_A_PARTIR_DE;
+            motif = "coupe dure";
         }
     }
 
@@ -262,8 +253,7 @@ void VoiceStream::flush()
         // Le module ne jette pas le texte : il attend une coupe exploitable.
         // Sans cette trace, « la voix ne sort pas » est indistinguable de « le
         // texte n'arrive jamais » (les seuls logs existants étaient post-envoi).
-        qCDebug(lcVoiceStream) << "pas de coupe · buffer" << m_buffer.size() << "car · cible"
-                               << target << "· avance" << lead << "· warm" << warm;
+        qCDebug(lcVoiceStream) << "pas de coupe · buffer" << m_buffer.size() << "car";
         return;
     }
 
@@ -273,6 +263,7 @@ void VoiceStream::flush()
     if (chunk.isEmpty())
         return;
 
+    qCDebug(lcVoiceStream) << "coupe" << motif << "·" << chunk.size() << "car";
     sendChunk(chunk);
 }
 

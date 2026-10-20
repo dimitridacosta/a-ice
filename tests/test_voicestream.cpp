@@ -159,7 +159,10 @@ private slots:
     void stopResetsState();
     void statusLineFormat();
     void firstChunkCutAtPunctuation();
-    void firstChunkCutAtCommaWhenCold();
+    void noArtificialCutInsideASentence();
+    void paragraphCutPreferred();
+    void commaOnlyAsFallbackWhenTextPilesUp();
+    void hardCutWhenNoPunctuationAtAll();
     void backpressureHoldsChunkLocal();
     void serverLostMidStreamAbandonsTurn();
     void streamRecoversAfterServerLost();
@@ -244,29 +247,101 @@ void TestVoiceStream::firstChunkCutAtPunctuation()
     QCOMPARE(srv.receivedTexts().first(), QStringLiteral("Bonjour le monde."));
 }
 
-void TestVoiceStream::firstChunkCutAtCommaWhenCold()
+// Pas de coupe inventée : une phrase sans limite naturelle reste dans le buffer
+// (quitte à partir entière à la fin du tour) plutôt que d'être brisée à la virgule.
+void TestVoiceStream::noArtificialCutInsideASentence()
 {
     FakeTtsServer srv;
     QVERIFY(srv.start());
     auto v = makeStream(srv);
     v->setEnabled(true);
 
-    // Phrase longue SANS ponctuation forte avant 120 car, avec une virgule tôt :
-    // le 1er chunk (froid, TTFA agressif) doit couper a la virgule, pas a la fin.
-    const QString longText = QStringLiteral(
-        "Bonjour Dimitri, voici une tres longue phrase qui depasse largement cent vingt "
-        "caracteres pour verifier que la premiere coupe se fait bien a la virgule et "
-        "non a la fin de la phrase.");
-    QVERIFY(longText.size() > 120);
-    v->feed(longText);
+    const QString phrase = QStringLiteral(
+        "Bonjour Dimitri, voici une phrase longue avec plusieurs virgules, qui ne se"
+        " termine par aucun point, et qui reste sous les quatre cents caracteres pour"
+        " verifier qu'aucune coupe arbitraire n'est envoyee en plein milieu");
+    QVERIFY(phrase.size() < 400);
+    v->feed(phrase);
+    QTest::qWait(400);
+
+    QVERIFY2(srv.receivedTexts().isEmpty(),
+             qPrintable(QStringLiteral("coupe arbitraire dans une phrase non finie : ")
+                        + srv.receivedTexts().join(QStringLiteral(" // "))));
+
+    v->finish();          // fin du tour : le texte part COMPLET
+    QTest::qWait(300);
+    QCOMPARE(srv.receivedTexts().size(), 1);
+    QCOMPARE(srv.receivedTexts().first(), phrase);
+}
+
+// La limite la plus naturelle est le paragraphe : il est préféré à toute autre.
+void TestVoiceStream::paragraphCutPreferred()
+{
+    FakeTtsServer srv;
+    QVERIFY(srv.start());
+    auto v = makeStream(srv);
+    v->setEnabled(true);
+
+    const QString paragraphe = QStringLiteral(
+        "Une premiere ligne assez longue pour depasser les vingt quatre caracteres"
+        " requis, et sans ponctuation forte");
+    const QString suite = QStringLiteral(
+        "une deuxieme ligne qui attend encore un peu avant de pouvoir etre coupee");
+    v->feed(paragraphe + QStringLiteral("\n\n") + suite);
     QTest::qWait(400);
 
     QVERIFY2(!srv.receivedTexts().isEmpty(), "aucun chunk recu");
+    QCOMPARE(srv.receivedTexts().size(), 1);
+    QCOMPARE(srv.receivedTexts().first(), paragraphe);
+
+    v->finish();
+    QTest::qWait(300);
+    QCOMPARE(srv.receivedTexts().size(), 2);
+    QCOMPARE(srv.receivedTexts().at(1), suite);
+}
+
+// La virgule redevient utilisable… seulement quand le texte s'empile sans aucune
+// limite naturelle (au-delà de SECOURS_A_PARTIR_DE) : filet anti-sec, plus habitude.
+void TestVoiceStream::commaOnlyAsFallbackWhenTextPilesUp()
+{
+    FakeTtsServer srv;
+    QVERIFY(srv.start());
+    auto v = makeStream(srv);
+    v->setEnabled(true);
+
+    QString texte;
+    while (texte.size() < 480)
+        texte += QStringLiteral("voici un morceau de texte sans point mais avec une virgule, ");
+    QVERIFY(texte.size() > 400);
+    v->feed(texte);
+    QTest::qWait(400);
+
+    QVERIFY2(!srv.receivedTexts().isEmpty(), "le filet de secours n'a pas joue");
     const QString first = srv.receivedTexts().first();
     QVERIFY2(first.endsWith(QLatin1Char(',')),
-             qPrintable(QStringLiteral("coupe attendue a la virgule, recu : ") + first));
-    QVERIFY(first.size() < longText.size());
-    QVERIFY(first.size() <= 120);
+             qPrintable(QStringLiteral("secours attendu sur la virgule, recu : ") + first));
+    QVERIFY(first.size() < texte.size());
+}
+
+// Bloc sans AUCUNE ponctuation (code, URL…) : le filet coupe en dur, la lecture
+// n'arrive jamais à sec.
+void TestVoiceStream::hardCutWhenNoPunctuationAtAll()
+{
+    FakeTtsServer srv;
+    QVERIFY(srv.start());
+    auto v = makeStream(srv);
+    v->setEnabled(true);
+
+    QString bloc;
+    while (bloc.size() < 600)
+        bloc += QStringLiteral("mot ");
+    v->feed(bloc);
+    QTest::qWait(400);
+
+    QVERIFY2(!srv.receivedTexts().isEmpty(), "aucun chunk recu sur un bloc sans ponctuation");
+    // Coupe dure a 500 car : le 500e caractere tombe sur un espace (« mot » repetes),
+    // retire par trimmed() → 499.
+    QCOMPARE(srv.receivedTexts().first().size(), 499);
 }
 
 void TestVoiceStream::backpressureHoldsChunkLocal()
