@@ -149,6 +149,7 @@ private slots:
     void firstChunkCutAtCommaWhenCold();
     void backpressureHoldsChunkLocal();
     void serverLostMidStreamAbandonsTurn();
+    void streamRecoversAfterServerLost();
 
 private:
     // VoiceStream branché sur le faux serveur, auto-spawn coupé (jamais de vrai ddvoice).
@@ -284,6 +285,40 @@ void TestVoiceStream::serverLostMidStreamAbandonsTurn()
     QCOMPARE(spy.count(), 1);
     QVERIFY(v->statusLine().contains(QStringLiteral("perdu")));
     QVERIFY(v->statusLine().contains(QStringLiteral("buffer 0 car")));
+}
+
+// Un serveur mort ne doit pas condamner la conversation : ChatWidget appelle
+// reset() au debut de chaque tour -> le tour suivant doit pouvoir reparler.
+void TestVoiceStream::streamRecoversAfterServerLost()
+{
+    FakeTtsServer srv1;
+    QVERIFY(srv1.start());
+    auto v = makeStream(srv1);
+    v->setEnabled(true);
+
+    v->feed(QStringLiteral("Premier chunk."));
+    QTest::qWait(300);
+    QVERIFY(!srv1.receivedTexts().isEmpty());
+
+    srv1.killServer();
+    QTest::qWait(150);
+    v->feed(QStringLiteral("Suite perdue."));
+    QTest::qWait(200);
+    QVERIFY(v->statusLine().contains(QStringLiteral("perdu")));
+
+    // Tour suivant : reset() (cree par ChatWidget avant d'envoyer).
+    v->reset();
+    QVERIFY2(!v->statusLine().contains(QStringLiteral("perdu")),
+             "le stream est reste condamne apres reset()");
+
+    FakeTtsServer srv2;
+    QVERIFY(srv2.start());
+    v->setSocketPath(srv2.path());
+    v->feed(QStringLiteral("Le tour suivant doit reparler."));
+    QTest::qWait(400);
+
+    QVERIFY2(!srv2.receivedTexts().isEmpty(),
+             "le tour suivant n'a rien envoye : voix morte pour toute la conversation");
 }
 
 QTEST_MAIN(TestVoiceStream)

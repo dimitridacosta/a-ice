@@ -976,6 +976,13 @@ void ChatWidget::onSendMessage(const QString &text)
     setGenerating(true);
     startAssistantBubble();
 
+    // Nouveau tour vocal : on repart proprement. Un serveur TTS mort en plein stream
+    // laisse VoiceStream en « perdu » (feed() n'accumule plus) ; sans ce reset, la
+    // conversation entiere reste muette meme avec un serveur tout neuf (reset()
+    // n'etait appele que sur /new).
+    if (m_voice)
+        m_voice->reset();
+
     m_client->sendMessages(m_messages);
     scrollToBottom();
     scheduleBlurUpdate();
