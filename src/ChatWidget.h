@@ -21,6 +21,7 @@ class WaitingBlock;
 class LlamaClient;
 class Config;
 class ToolRegistry;
+class VoiceStream;
 struct ToolCall;
 
 /**
@@ -98,9 +99,16 @@ private:
     /// Bascule le bouton entre “envoyer” et “stop” pendant la génération.
     void setGenerating(bool generating);
 
+    /// Crée VoiceStream et le branche sur contentChunk/fin de tour/erreur.
+    void setupVoice();
+
     /// Intercepte les commandes slash (/new, /help, /model, ...). Retourne true si la
     /// saisie etait une commande (consommee, non envoyee au LLM), false sinon.
     bool handleSlashCommand(const QString &text);
+
+    /// Commande /voice [on|off] : toggle par défaut. Off = stop immédiat
+    /// (son + génération). Retourne true (commande consommée).
+    bool handleVoiceCommand(const QString &arg);
 
     /// Bascule le modèle courant vers `aliasOrName` (commande /model). Affiche
     /// un retour utilisateur (succès/échec) dans une bulle système et pousse la
@@ -139,6 +147,7 @@ private:
 
     QScopedPointer<LlamaClient> m_client;
     QScopedPointer<ToolRegistry> m_registry;
+    QScopedPointer<VoiceStream> m_voice;   // streaming TTS (/voice)
     QScrollArea *m_scrollArea = nullptr;
     QWidget    *m_messagesContainer = nullptr;
     QVBoxLayout *m_messagesLayout = nullptr;

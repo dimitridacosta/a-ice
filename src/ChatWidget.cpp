@@ -9,6 +9,7 @@
 #include "tools/TerminalSafety.h"
 #include "tools/BraveSearchTool.h"
 #include "tools/WebFetchTool.h"
+#include "voice/VoiceStream.h"
 #include <KWindowEffects>
 #include <QPainterPath>
 #include <QPainter>
@@ -105,6 +106,25 @@ ChatWidget::ChatWidget(QWidget *parent)
 {
     setupUI();
     setupGlass();
+    setupVoice();
+}
+
+void ChatWidget::setupVoice()
+{
+    m_voice.reset(new VoiceStream(this));
+    connect(m_client.data(), &LlamaClient::contentChunk,
+            this, [this](const QString &t) { m_voice->feed(t); });
+    connect(m_client.data(), &LlamaClient::responseComplete,
+            this, [this]() { m_voice->finish(); });
+    connect(m_client.data(), &LlamaClient::requestError,
+            this, [this]() { m_voice->stop(); });
+    connect(m_client.data(), &LlamaClient::toolCallsReady,
+            this, [this](const QList<ToolCall> &, const QString &c) {
+                // Le texte avant les tool_calls est déjà passé par feed ;
+                // clôture le tour vocal courant (le reste partira en chunks
+                // des prochains tours, le son suit le contenu, pas les tools).
+                m_voice->finish();
+            });
 }
 
 ChatWidget::~ChatWidget() = default;
@@ -678,6 +698,9 @@ bool ChatWidget::handleSlashCommand(const QString &text)
     const QString cmd = text.section(QLatin1Char(' '), 0, 0).toLower();
     const QString arg = text.section(QLatin1Char(' '), 1);
 
+    if (cmd == QLatin1String("/voice")) {
+        return handleVoiceCommand(arg);
+    }
     if (cmd == QLatin1String("/new") || cmd == QLatin1String("/clear")) {
         resetConversation();
         return true;
@@ -754,6 +777,7 @@ bool ChatWidget::handleSlashCommand(const QString &text)
                 "- /models : liste les modeles disponibles\n"
                 "- /context : infos contexte (tokens, modele, fenetre)\n"
                 "- /compact : compacte le contexte (résumé injecté)\n"
+                "- /voice [on|off] : voix TTS en direct (toggle)\n"
                 "- /help : affiche cette aide"));
         }
         m_currentBubble = nullptr;
@@ -765,6 +789,37 @@ bool ChatWidget::handleSlashCommand(const QString &text)
         return true;
     }
     return false;  // commande inconnue
+}
+
+bool ChatWidget::handleVoiceCommand(const QString &arg)
+{
+    const QString a = arg.trimmed().toLower();
+    bool on;
+    if (a == QLatin1String("on") || a == QLatin1String("1") || a == QLatin1String("true"))
+        on = true;
+    else if (a == QLatin1String("off") || a == QLatin1String("0") || a == QLatin1String("false"))
+        on = false;
+    else
+        on = !m_voice->enabled();   // toggle par défaut
+
+    if (on) {
+        m_voice->setEnabled(true);
+        showSystemNote(QStringLiteral("🔊 Voix activée — je parle au fil de l'eau."));
+    } else {
+        // Off immédiat : son en cours coupé + file serveur vidée + buffer local.
+        m_voice->stop();
+        m_voice->setEnabled(false);
+        // Si une génération tourne, on l'interrompt aussi (cohérence : plus de
+        // voix = plus de texte en cours qui arriverait pour la voix suivante).
+        if (m_isTyping || m_interruptRequested == false) {
+            if (m_isTyping) {
+                onStopClicked();
+            }
+        }
+        showSystemNote(QStringLiteral("🔇 Voix coupée — génération interrompue s'il y en avait une."));
+    }
+    qInfo() << "[a-ice] /voice" << (on ? "on" : "off") << "·" << m_voice->statusLine();
+    return true;
 }
 
 void ChatWidget::resetConversation()
@@ -801,6 +856,8 @@ void ChatWidget::resetConversation()
     m_toolCallInProgressId.clear();
     m_toolCallInProgressName.clear();
     m_sessionApprovedPatterns.clear();  // nouvelle conversation = nouveaux approvals
+    if (m_voice)
+        m_voice->reset();
     m_isTyping = false;
     m_autoScroll = true;  // nouvelle conversation = on suit a nouveau
     // /new : on repart de zéro, on abandonne aussi le contexte compacté.
@@ -820,6 +877,8 @@ void ChatWidget::onStopClicked()
     m_client->cancel();
     if (m_registry)
         m_registry->cancelAll();
+    if (m_voice && m_voice->enabled())
+        m_voice->stop();   // stop immédiat : son + file serveur + buffer
 
     // Si un tool est en cours, on injecte immediatement une reponse role="tool"
     // "cancelled" pour que l'historique reste coherent (sinon l'API rejette au
@@ -1272,6 +1331,8 @@ void ChatWidget::onRequestError(const QString &error)
     m_activeTool     = nullptr;
     m_waitingBlock   = nullptr;
     m_interruptRequested = false;
+    if (m_voice)
+        m_voice->stop();
     scheduleBlurUpdate();
 }
 
