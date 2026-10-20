@@ -30,7 +30,7 @@ joués par **ffplay** dès leur disponibilité (TTFA ~250-450 ms).
 | Branchements UI | `src/ChatWidget.cpp` → `setupVoice()` (appelée l.110, définie l.113), `/voice` → `handleVoiceCommand()` (l.805) |
 | Source du flux texte | `src/llama_client.cpp` → signal `contentChunk` (émit l.375/482/494/501) |
 | Tests | `tests/test_voicestream.cpp` (290 l.) → `QT_QPA_PLATFORM=offscreen build/test_voicestream` |
-| Serveur TTS (Python) | `~/projects/ai/projects/faster-qwen3-tts/voix_serveur.py` — ⚠️ **pas de repo git** |
+| Serveur TTS (Python) | `~/projects/ai/projects/faster-qwen3-tts/voix_serveur.py` — **repo git** depuis le 20/10 (branche `main`, commit racine `de3411a`) |
 | CLI | `~/.local/bin/ddvoice` → symlink vers `faster-qwen3-tts/ddvoice` (enfile, statut, stop, extinction) |
 | Venv serveur | `faster-qwen3-tts/.venv` (Python 3.12.13) : `qwen_tts_hf==0.1.1.post1`, `faster_qwen3_tts==0.5.4` — JAMAIS l'upstream `qwen-tts` |
 | Voix de référence | `faster-qwen3-tts/refs/mymy_v1-0-24k.wav` (x-vector, `xvec_only=True`) |
@@ -139,8 +139,10 @@ Vérifié : `cmake --build build` **sur l'hôte échoue** (ECM / Extra CMake Mod
    vivre dans son propre thread (`FakeServerThread`), sinon deadlock.
 3. **Ne pas builder sur l'hôte Bazzite** (ECM absent).
 4. **Ne jamais installer l'upstream `qwen-tts`** : le venv pointe sur `qwen_tts_hf`.
-5. `faster-qwen3-tts` **n'est pas versionné** : sauvegarder avant une modif risquée ;
-   aucun `git diff` ne rattrapera une erreur.
+5. `faster-qwen3-tts` est **versionné depuis le 20/10** (git init, `.gitignore` :
+   `.venv/`, `out/`, `refs/`, `*.log`, `*.bak-*`). Les `.bak` de `voix_serveur.py`
+   ont été archivés sur la branche `archive/pre-antiderive` puis supprimés.
+   Les `.bak` ne sont plus nécessaires : penser `git diff` avant toute modif.
 6. **Un `stop()` n'est pas une mort serveur** : `stop()` neutralise `m_serverConfirmed`
    pour ne pas émettre `serverLost()` à tort.
 7. Croire `avance_audio_s` (mesure réelle), pas l'estimation locale du temps audio.
@@ -151,8 +153,8 @@ Vérifié : `cmake --build build` **sur l'hôte échoue** (ECM / Extra CMake Mod
 - Reprise VRAIE (re-synthèse) si le serveur meurt en plein stream : aujourd'hui on
   abandonne le tour proprement sans rejouer le texte perdu.
 - Faux serveur de test : ne simule pas encore l'auto-spawn (coupé en test).
-- Versionner `faster-qwen3-tts` (`voix_serveur.py` + `ddvoice`) pour ne plus dépendre
-  des `.bak`.
+- ~~Versionner `faster-qwen3-tts`~~ **fait le 20/10** : git init, commit racine
+  `de3411a`, `.bak` archivés sur `archive/pre-antiderive`.
 - Regarder `VoiceStream.cpp.bak-20261020` (état intermédiaire hors git) puis le supprimer
   ou le commit quelque part.
 
