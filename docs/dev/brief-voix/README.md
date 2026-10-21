@@ -27,10 +27,10 @@ joués par **ffplay** dès leur disponibilité (TTFA ~250-450 ms).
 | Rôle | Chemin |
 |---|---|
 | Client a-ice (Qt6/C++17) | `~/projects/ai/projects/a-ice/` — repo git, travail voix sur la branche **`voice`** |
-| Module voix | `src/voice/VoiceStream.h` (108 l.) + `src/voice/VoiceStream.cpp` (422 l.) |
+| Module voix | `src/voice/VoiceStream.h` (136 l.) + `src/voice/VoiceStream.cpp` (672 l.) |
 | Branchements UI | `src/ChatWidget.cpp` → `setupVoice()` (appelée l.110, définie l.113), `/voice` → `handleVoiceCommand()` (l.805) |
 | Source du flux texte | `src/llama_client.cpp` → signal `contentChunk` (émit l.375/482/494/501) |
-| Tests (in-process, faux serveur) | `tests/test_voicestream.cpp` (445 l., 15 tests) → `QT_QPA_PLATFORM=offscreen build/test_voicestream` |
+| Tests (in-process, faux serveur) | `tests/test_voicestream.cpp` (618 l., 21 tests) → `QT_QPA_PLATFORM=offscreen build/test_voicestream` |
 | Test protocole client ↔ serveur | `faster-qwen3-tts/test_protocol.py` (166 l.) — parle au **vrai** socket ; textes `silencieux` → synthétisés mais **pas joués** |
 | Test du lecteur audio | `faster-qwen3-tts/test_lecture.py` (123 l.) — invariant « un seul ffplay vivant », process oubliés, trous audio (`Popen` simulé : **aucun son**) |
 | Serveur TTS (Python) | `~/projects/ai/projects/faster-qwen3-tts/voix_serveur.py` (700 l.) — **repo git** depuis le 20/10 (branche `main`, commit racine `de3411a`) ; client CLI : `voix_client.py` |
@@ -96,6 +96,52 @@ doit immobiliser personne. Séquentiel, il bloquait `recv` jusqu'au timeout de 3
 - **`/voice [on|off]`** dans la barre de prompt ; état persisté dans
   `~/.config/a-ice/a-ice.conf` → `[voice] enabled=…`.
 
+## Ce qui part au TTS (filtre client + censure serveur)
+Dimitri : « ce qui est envoyé en TTS ne doit pas être du markdown riche, mais QUE du texte
+et la ponctuation ; surtout pas d'emoji — j'ai l'impression que ça casse tout ». Son
+impression était **juste, et mesurée** (`--pas-de-son`, 21/10, modèle 0.6 B voix mymy) :
+
+| texte envoyé | caractères | audio produit | débit |
+|---|---|---|---|
+| prose française | 156 | 7,28 s | 21,4 car/s |
+| markdown (`** # - |`) | 168 | 8,72 s | 19,3 car/s |
+| avec une URL | 90 | 7,28 s | 12,4 car/s (ne casse pas) |
+| du code (`def … : print(...)`) | 78 | 7,92 s | **9,8 car/s — le modèle bute, il ralentit de moitié** |
+| **emojis seuls** `😀🎧🔊⚠️✅👍` | 6 | **163,04 s en 62 s de wall** | **dérive totale** |
+
+Le danger ce n'est donc PAS le markdown (il alourdit d'environ 20 %) : ce sont les
+**pictogrammes**, qui font débiter le modèle jusqu'à sa limite de génération — pendant ce
+temps toute la file est bloquée derrière. Le markdown reste pénible à l'oreille, donc il
+est retiré aussi.
+
+**Barrière 1 — client, `VoiceStream::nettoyerPourLaVoix(chunk, etat)`** (appelé dans
+`feed()`, `1aebe0a`). L'état (`Filtre`) **survit aux découpages du stream** : un bloc de
+code (trois backticks) ou un `**` peut tomber pile entre deux `contentChunk` ; une marque de bloc
+inachevée (1–2 backticks en fin de chunk) est reportée au chunk suivant. Règles, dans
+l'ordre : blocs de code **supprimés** (le code n'est pas de la voix) → tableaux
+`| a | b |` remis en prose « a, b » et lignes de séparation supprimées → titres `##`,
+puces `- * + ·`, citations `>`, règles horizontales (deviennent une vraie pause),
+balises HTML, marques inline `** __ ~~` (le texte survit, la marque part) →
+`[libellé](url)` devient le libellé, **URL crue → « un lien »** (une URL ne se prononce
+pas) → caractère par caractère : whitelist de ce qui est prononçable (lettres et chiffres
+de toutes les écritures, ponctuation usuelle, `€ ™ ° § ±`), **rejetés** : emoji (substituants
+inclus), pictogrammes, flèches, étoiles, dessin de tableaux, puces `• ‣ ⁃`, sélecteurs de
+variante, ZWJ, BOM, contrôles, et le balisage ASCII `` ` * ~ ^ | < > \ `` ; tirets longs
+`—`/`–` → **virgule**, ou **point** si ce qui suit commence une phrase, et `2–3` → « 2 à 3 »
+→ recollage (`...` → `…`, espaces fermés autour d'un caractère retiré, ponctuation
+dupliquée nettoyée, paragraphes conservés car c'est dessus que `flush()` coupe).
+**Le filtre ne retire jamais les espaces de bord** : « Le casque » + « est bon » se
+colleraient. `trim()` reste à l'envoi (`flush()`, `finish()`).
+
+**Barrière 2 — serveur (`875d1bc`)**, pour les clients qui ne passent pas par a-ice (CLI,
+scripts) : `filtrer_pour_la_voix()` retire la même famille de caractères ; un texte alors
+vide reçoit `{"ignore": "rien à dire"}` et **n'est jamais enfilé**. Et même si un texte
+suspect passe, `limite_derive()` = `max(5 s, caractères / 6)` **coupe la génération** au
+delà (`DERIVE COUPEE` dans le journal, compteur `derives` dans le statut et `ddvoice.diag`).
+
+À savoir : les blocs de code sont **supprimés** — si un jour tu veux qu'une commande soit
+lue, c'est cette règle qu'il faut changer, pas le chunker.
+
 ## Côté serveur (`voix_serveur.py`)
 - `Qwen/Qwen3-TTS-12Hz-0.6B-Base`, attention sdpa, warmup CUDA graphs (~9 s de
   chargement, ~2,5 Go VRAM, RTX 3070 laptop).
@@ -129,17 +175,19 @@ Vérifié : `cmake --build build` **sur l'hôte échoue** (ECM / Extra CMake Mod
 
 ## Git / état (2026-10-21)
 - Client : branche **`voice`** (HEAD), **non mergée dans `main`** — sur `main` ce pipeline
-  n'existe pas. 10 commits voix : `63fa4e4` (VoiceStream) → `99a65d2` (débit 18.5 + filet)
+  n'existe pas. 13 commits voix : `63fa4e4` (VoiceStream) → `99a65d2` (débit 18.5 + filet)
   → `421d7ed` (backpressure sur l'avance serveur) → `f9ad8e1` (faux serveur de test,
   `serverLost`, persistance `/voice`, `/voice off`) → `11e7df8` + `22a198e` (docs)
   → `fb4ab81` (`m_voice->reset()` à chaque tour) → `12c328c` (connexion neuve par requête)
   → `b42115f` (brief) → `a66f599` (découpe naturelle : paragraphe → phrase → virgule en secours)
-  → `a785c8c` (brief). L'avance (`audioLead()`) ne pilote plus la taille des chunks.
+  → `a785c8c` + `5c986ec` (brief) → `1aebe0a` (**filtre « texte + ponctuation seulement »** et
+  **dernier tronçon relancé**). L'avance (`audioLead()`) ne pilote plus la taille des chunks.
 - Serveur (`main`) : `de3411a` (racine) → `c599783` (multi-requêtes par connexion + journal
   fondé + `test_protocol.py`) → `4a01aff` (un seul lecteur ffplay + trous audio +
   `test_lecture.py`) → `8787fcd` (trou = après le début du tour) → `6363b9f` (un thread
   par connexion) → `7ecd6c3` (**verrou d'instance `flock`** + `test_instance.py` +
-  `probe_ffplay.py` + trou audio journalisé avec son état complet).
+  `probe_ffplay.py` + trou audio journalisé avec son état complet) → `875d1bc`
+  (**censure des pictogrammes + `limite_derive`** ; compteur `derives` dans le statut).
 - **Aucun `.bak` ne subsiste** dans les deux repos (vérifié le 21/10, `find`) : la question
   des blobs intermédiaires est close, `git diff` suffit désormais.
 - Côté mémoire de l'assistant : la version canonique vit dans
@@ -269,6 +317,20 @@ Depuis `7ecd6c3`, chaque `TROU AUDIO` est journalisé avec son état complet (ta
 files, `écrit s / écoulé s / en file s`, synthèse en cours, lecteur vivant ou fermé) : le
 prochain tour de Dimitri tranchera avec des chiffres au lieu d'une hypothèse.
 
+## Incident du 21/10 (5) — la fin du message n'était jamais dite
+`finish()` envoyait le dernier morceau **une seule fois**, puis **arrêtait le heartbeat**. Or
+`sendChunk()` refuse un chunk quand le serveur est engorgé (file ≥ 6 ou avance > 10 s) et le
+remet dans `m_buffer` : sans heartbeat, il y restait jusqu'au `reset()` du tour suivant.
+Dernières phrases perdues à chaque fin de réponse longue (la file serveur était justement
+pleine à ce moment-là).
+
+- Corrigé par `1aebe0a` : le dernier morceau part dans `m_finEnAttente` (et non dans
+  `m_buffer`), relancé par le heartbeat jusqu'à acceptation, borné à `FIN_EXPIRATION_MS =
+  60 s` (au-delà : abandon **journalisé**, pas silencieux). `statusLine()` affiche
+  « fin en attente N car ».
+- Prouvé par `dernierTronconPartMemeServeurEngorge()` : serveur annoncé à 8 dans la file →
+  `finish()` → file vidée → **le morceau arrive**. Sans le correctif, le test FAIL.
+
 ## Points morts réglés le 2026-10-20 (commit `f9ad8e1`, tests 10/10)
 - **Tests du chunking réel** : faux serveur in-process (`FakeServerThread`, `QLocalServer`
   dans SA PROPRE thread — sinon deadlock avec les `waitForReadyRead` bloquants).
@@ -287,7 +349,8 @@ prochain tour de Dimitri tranchera avec des chiffres au lieu d'une hypothèse.
   dans `handleVoiceCommand`, relue dans `setupVoice()`.
 
 ## Validation (comment savoir que le pipeline est vivant)
-1. `QT_QPA_PLATFORM=offscreen ./build/test_voicestream` → **`15 passed, 0 failed`**.
+1. `QT_QPA_PLATFORM=offscreen ./build/test_voicestream` → **`21 passed, 0 failed`** (15 avant
+   le filtre voix + le dernier tronçon).
 2. Protocole client ↔ serveur (serveur lancé) : `.venv/bin/python test_protocol.py` →
    « Protocole OK : multi-requêtes et mono-requête sont servis ».
 3. Lecteur audio : `.venv/bin/python test_lecture.py` → « Lecteur OK : un seul joueur à la
@@ -373,6 +436,11 @@ prochain tour de Dimitri tranchera avec des chiffres au lieu d'une hypothèse.
 23. **ffplay n'avale pas l'audio plus vite qu'il ne joue** : mesuré (20 s de silence → fin à
     20,07 s, écriture bridée à 14,45 s). Ne pas « corriger » la cadence en accusant le
     lecteur ; la backpressure du pipe est réelle et saine.
+24. **Un emoji n'est pas un caractère inoffensif** : seuls, ils font débiter le modèle 163 s
+    pour 6 caractères. Ils ne doivent JAMAIS atteindre `MODELE.generate…` — filtrer avant,
+    pas espérer que le modèle s'en débrouille.
+25. **Ne pas `trim()` un texte filtré à la volée** : le stream arrive par morceaux, et
+    retirer l'espace de fin colle les mots du morceau suivant. Le trim est à l'envoi.
 
 ## Pistes restantes (non bloquantes)
 - **Merger `voice` dans `main`** une fois validé à l'usage : les correctifs sont prouvés aux
