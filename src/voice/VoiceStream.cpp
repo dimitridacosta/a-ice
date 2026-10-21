@@ -5,6 +5,8 @@
 #include <QDir>
 #include <QProcess>
 #include <QDebug>
+#include <QRegularExpression>
+#include <QStringList>
 #include <algorithm>
 
 Q_LOGGING_CATEGORY(lcVoiceStream, "aice.voice")
@@ -23,6 +25,9 @@ static constexpr int MAX_CHUNK_CHARS = 1100;
 static constexpr int MIN_CHUNK_CHARS = 24;
 // Période du heartbeat flush (filet : ponctuation exotique, fin de stream).
 static constexpr int FLUSH_INTERVAL_MS = 120;
+// Bornée : le dernier tronçon est relancé jusqu'ici, pas au-delà (un serveur mort ne
+// doit pas faire tourner le client indéfiniment sur un morceau déjà périmé).
+static constexpr int FIN_EXPIRATION_MS = 60000;
 
 VoiceStream::VoiceStream(QObject *parent)
     : QObject(parent)
@@ -193,9 +198,195 @@ int finDePhrase(const QString &buffer, const QString &ponctuations, int fenetre)
 }
 } // namespace
 
+// --- ce qui peut être dit ---------------------------------------------------
+namespace {
+
+QRegularExpression multiligne(const QString &motif)
+{
+    QRegularExpression re(motif);
+    re.setPatternOptions(QRegularExpression::MultilineOption);  // ^ et $ = ligne
+    return re;
+}
+
+// Motif appliqué dans cet ordre : blocs de code, tableaux, liens, balises, structures
+// de ligne, marques inline, puis caractère par caractère.
+const QRegularExpression FENCE(QStringLiteral("```+"));
+const QRegularExpression LIEN_IMAGE(QStringLiteral("!\\[([^\\]]*)\\]\\([^)]*\\)"));
+const QRegularExpression LIEN(QStringLiteral("\\[([^\\]]*)\\]\\([^)]*\\)"));
+const QRegularExpression URL(QStringLiteral("(?:https?://|www\\.)[^\\s)\\]]+"));
+const QRegularExpression BALISE_HTML(QStringLiteral("</?[A-Za-z][A-Za-z0-9]*(?:\\s[^>]*)?>"));
+const QRegularExpression TITRE(multiligne(QStringLiteral("^ {0,3}#{1,6}[ \\t]+")));
+const QRegularExpression CUETON(multiligne(QStringLiteral("^ {0,3}[-+*\x{00b7}][ \\t]+")));
+const QRegularExpression CITATION(multiligne(QStringLiteral("^ {0,3}>[ \\t]*")));
+const QRegularExpression REGLE_H(multiligne(QStringLiteral("^ {0,3}[-*_]{3,}[ \\t]*$")));
+const QRegularExpression MARQUES(QStringLiteral("[*_]{2,}|~{2,}"));
+
+// Recollage : un caractère retiré ne doit pas laisser de trou dans la phrase.
+const QRegularExpression POINTS_SUSPENDUS(QStringLiteral("\\.{3}"));
+const QRegularExpression ESPACES(QStringLiteral("[ \\t\x{00a0}]+"));
+const QRegularExpression ESPACE_AVANT_PONCTUATION(QStringLiteral("[ \\t\x{00a0}]+([,;:.!?])"));
+const QRegularExpression ESPACE_APRES_PONCTUATION(QStringLiteral("([,;:.!?])(?=\\p{L})"));
+const QRegularExpression PONCTUATION_REPETEE(QStringLiteral("([,;:.!?])\\1+"));
+const QRegularExpression ESPACE_AVANT_RETOUR(QStringLiteral(" +\n"));
+const QRegularExpression LIGNES_VIDES(QStringLiteral("\n{3,}"));
+
+// Whitelist, pas blacklist : ce qui est prononçable. Les pictogrammes (emoji, ✅, ★,
+// flèches, dessin de tableaux) ne passent pas, et les emoji hors BMP sont faits de
+// substituants — rejetés aussi.
+bool caractereParable(const QChar &c)
+{
+    const ushort u = c.unicode();
+    // Invisibles et « colorants » d'emoji : jamais prononçables seuls.
+    if (u == 0x200B || u == 0x200C || u == 0x200D || u == 0x200E || u == 0x200F
+        || u == 0x00AD || u == 0xFEFF || (u >= 0xFE00 && u <= 0xFE0F))
+        return false;
+    if (u == 0x000A || u == 0x000D || u == 0x0009)
+        return true;                                  // retour ligne, tabulation
+    if (c.isMark()) return true;                      // accent combinant, collé à sa lettre
+    if (c.isLetterOrNumber()) return true;            // toutes les écritures
+    if (c.isSpace()) return true;
+    if (c.isLowSurrogate() || c.isHighSurrogate()) return false;
+    if (c.isNonCharacter()) return false;
+    if (u < 0x0020 || (u >= 0x007F && u <= 0x009F)) return false;   // contrôles
+    if (u >= 0x21 && u <= 0x7E) {
+        // Ponctuation utile à l'oreille. Ce qui suit est du balisage, pas de la voix :
+        // ` * ~ ^ | < > \  ne sont jamais prononcés.
+        switch (u) {
+        case 0x60: case 0x2A: case 0x7E: case 0x5E: case 0x7C:
+        case 0x3C: case 0x3E: case 0x5C:
+            return false;
+        default:
+            return true;
+        }
+    }
+    if (u >= 0x00A1 && u <= 0x00BF) return true;      // ¡ § ¶ · ± ¿ £ ©
+    if (u >= 0x2000 && u <= 0x206F) {
+        // « » ‘ ’ “ ” – — … ‰ passent ; les puces de liste (• ‣ ⁃) ne se prononcent pas.
+        return u != 0x2022 && u != 0x2023 && u != 0x2043;
+    }
+    if (u == 0x20AC || u == 0x2122) return true;      // € ™
+    return false;   // tout le reste (So/Sk/Sm : ✅ ★ ● → ♦ …) n'est pas prononçable
+}
+} // namespace
+
+QString VoiceStream::nettoyerPourLaVoix(const QString &chunk, Filtre &etat)
+{
+    QString txt = etat.suspendu + chunk;
+    etat.suspendu.clear();
+
+    // 1. BLOCS DE CODE ``` … ``` : le code n'est pas de la voix (mesuré : le modèle
+    //    bute et retombe à ~10 car/s au lieu de 19). L'état survit aux découpages.
+    QString parle;
+    int position = 0;
+    QRegularExpressionMatchIterator fence = FENCE.globalMatch(txt);
+    while (fence.hasNext()) {
+        const QRegularExpressionMatch m = fence.next();
+        if (!etat.dansBlocCode)
+            parle += txt.mid(position, m.capturedStart() - position);
+        position = m.capturedEnd();
+        etat.dansBlocCode = !etat.dansBlocCode;
+    }
+    if (!etat.dansBlocCode && position < txt.size())
+        parle += txt.mid(position);
+    txt = parle;
+
+    // 2. Une marque de bloc peut être coupée par le stream (« `` » puis « ` ») : elle
+    //    est reportée au chunk suivant au lieu d'être traitée comme du texte.
+    int fin = txt.size();
+    while (fin > 0 && txt.at(fin - 1) == QLatin1Char('`') && (txt.size() - fin) < 2)
+        --fin;
+    if (fin < txt.size()) {
+        etat.suspendu = txt.mid(fin);
+        txt.truncate(fin);
+    }
+
+    // 3. Tableaux : « | sortie | actif | » devient « sortie, actif » ; les lignes de
+    //    séparation (|---|---|) disparaissent.
+    QStringList rangees;
+    for (const QString &ligne : txt.split(QLatin1Char('\n'))) {
+        if (ligne.count(QLatin1Char('|')) < 2) {
+            rangees.append(ligne);
+            continue;
+        }
+        QStringList cellules;
+        for (const QString &brute : ligne.split(QLatin1Char('|'))) {
+            const QString cellule = brute.trimmed();
+            if (cellule.isEmpty())
+                continue;
+            bool separateur = true;
+            for (const QChar &c : cellule) {
+                if (c != QLatin1Char('-') && c != QLatin1Char(':') && !c.isSpace()) {
+                    separateur = false;
+                    break;
+                }
+            }
+            if (!separateur)
+                cellules.append(cellule);
+        }
+        rangees.append(cellules.join(QStringLiteral(", ")));
+    }
+    txt = rangees.join(QLatin1Char('\n'));
+
+    // 4. Structures et marques.
+    txt.replace(LIEN_IMAGE, QStringLiteral("\\1"));   // ![alt](url) → alt
+    txt.replace(LIEN, QStringLiteral("\\1"));         // [texte](url) → texte
+    txt.replace(URL, QStringLiteral("un lien"));      // une URL ne se prononce pas
+    txt.replace(BALISE_HTML, QString());              // <br>, <b> …
+    txt.replace(TITRE, QString());                    // « ## Étape 1 » → « Étape 1 »
+    txt.replace(CITATION, QString());                 // « > cité » → « cité »
+    txt.replace(CUETON, QString());                   // « - ouvrir » → « ouvrir »
+    txt.replace(REGLE_H, QStringLiteral("\n\n"));     // « ---- » → vraie pause
+    txt.replace(MARQUES, QString());                  // **gras** __gras__ ~~barré~~
+
+    // 5. Caractère par caractère. « — » ne se prononce pas : il devient une virgule,
+    //    ou un point quand ce qui suit commence une phrase (choix de Dimitri, qui ne
+    //    veut pas du tiret long à l'oreille).
+    QString sortie;
+    sortie.reserve(txt.size());
+    for (int i = 0; i < txt.size(); ++i) {
+        const QChar c = txt.at(i);
+        if (c == QChar(0x2014) || c == QChar(0x2013)) {           // — et –
+            const QChar avant = sortie.isEmpty() ? QChar() : sortie.at(sortie.size() - 1);
+            QChar apres;
+            for (int j = i + 1; j < txt.size(); ++j) {
+                if (!txt.at(j).isSpace()) {
+                    apres = txt.at(j);
+                    break;
+                }
+            }
+            if (avant.isDigit() && apres.isDigit())
+                sortie += QStringLiteral(" à ");        // « 2–3 » → « 2 à 3 »
+            else if (avant.isNull() || avant.isSpace())
+                sortie += (apres.isUpper() ? QLatin1Char('.') : QLatin1Char(','));
+            else
+                sortie += QLatin1Char(' ');
+            continue;
+        }
+        if (caractereParable(c))
+            sortie += c;
+    }
+
+    // 6. Recollage. Les paragraphes sont conservés : c'est dessus que flush() coupe.
+    sortie.replace(POINTS_SUSPENDUS, QStringLiteral("…"));
+    sortie.replace(ESPACES, QStringLiteral(" "));
+    sortie.replace(ESPACE_AVANT_PONCTUATION, QStringLiteral("\\1"));
+    sortie.replace(ESPACE_APRES_PONCTUATION, QStringLiteral("\\1 "));
+    sortie.replace(PONCTUATION_REPETEE, QStringLiteral("\\1"));
+    sortie.replace(ESPACE_AVANT_RETOUR, QStringLiteral("\n"));
+    sortie.replace(LIGNES_VIDES, QStringLiteral("\n\n"));
+    return sortie;
+}
+
 void VoiceStream::flush()
 {
-    if (!m_enabled || m_buffer.isEmpty())
+    if (!m_enabled)
+        return;
+
+    if (!m_finEnAttente.isEmpty()) {
+        envoyerLaFin();      // le dernier morceau passe avant toute autre décision
+        return;
+    }
+    if (m_buffer.isEmpty())
         return;
 
     // HIÉRARCHIE DES COUPES, de la plus naturelle à la moins naturelle :
@@ -268,7 +459,7 @@ void VoiceStream::flush()
 }
 
 // --- envoi -------------------------------------------------------------------
-void VoiceStream::sendChunk(const QString &text)
+void VoiceStream::sendChunk(const QString &text, bool pourLaFin)
 {
     if (!ensureConnected()) {
         // Serveur injoignable : si il avait déjà confirmé des envois, c'est une
@@ -277,7 +468,7 @@ void VoiceStream::sendChunk(const QString &text)
         // jamais démarré) : on remet le chunk en tête, le heartbeat retentera.
         handleServerUnreachable();
         if (!m_streamBroken)
-            requeue(text);
+            (pourLaFin ? m_finEnAttente : m_buffer) += text;
         return;
     }
     bool reading = false;
@@ -285,9 +476,13 @@ void VoiceStream::sendChunk(const QString &text)
     double avanceServeur = -1.0;
     if (serverStatus(reading, queued, &avanceServeur)) {
         if (queued >= 6 || avanceServeur > 10.0) {
-            // Serveur engorgé : on n'empile pas. Le chunk reste dans le buffer,
-            // le heartbeat (120 ms) retentera dès que la lecture aura repris.
-            requeue(text);
+            // Serveur engorgé : on n'empile pas. Le chunk est gardé (buffer, ou file
+            // de fin si c'est le dernier morceau), le heartbeat retentera dès que la
+            // lecture aura repris.
+            if (pourLaFin)
+                m_finEnAttente = text;
+            else
+                requeue(text);
             return;
         }
     }
@@ -300,7 +495,7 @@ void VoiceStream::sendChunk(const QString &text)
     if (!connexionFraiche()) {
         handleServerUnreachable();
         if (!m_streamBroken)
-            requeue(text);
+            (pourLaFin ? m_finEnAttente : m_buffer) += text;
         return;
     }
     m_socket->write(QJsonDocument(req).toJson(QJsonDocument::Compact) + '\n');
@@ -350,32 +545,80 @@ void VoiceStream::feed(const QString &chunk)
         return;
     if (m_streamBroken)
         return;   // serveur mort ce tour : on n'accumule plus de texte inutile
-    m_buffer += chunk;
+
+    // Rien ne part au TTS tel quel : ce qui arrive est du markdown riche (titres,
+    // tableaux, gras, blocs de code) et parfois des emojis. Mesuré sur le serveur : des
+    // emojis seuls font partir le modèle en dérive (163 s d'audio pour 6 caractères),
+    // bloquant toute la file derrière. Voir nettoyerPourLaVoix().
+    const QString parable = nettoyerPourLaVoix(chunk, m_filtre);
+    if (parable.isEmpty()) {
+        qCDebug(lcVoiceStream) << "rien à dire dans ce morceau" << chunk.size()
+                               << "car (balisage ou pictogrammes)";
+        return;
+    }
+    m_buffer += parable;
     if (!m_flushTimer.isActive())
         m_flushTimer.start();
     flush();
 }
 
+// Le dernier tronçon est relancé tant que le serveur ne l'a pas pris (heartbeat), sans
+// jamais dépasser FIN_EXPIRATION_MS.
+void VoiceStream::envoyerLaFin()
+{
+    if (m_finEnAttente.isEmpty() || m_streamBroken)
+        return;
+    if (m_finTimer.isValid() && m_finTimer.elapsed() > FIN_EXPIRATION_MS) {
+        qWarning() << "[voice] dernier tronçon abandonné après" << FIN_EXPIRATION_MS / 1000
+                   << "s d'essais (" << m_finEnAttente.size() << "car) : le serveur n'a rien repris";
+        m_finEnAttente.clear();
+        return;
+    }
+    const QString bout = m_finEnAttente;
+    m_finEnAttente.clear();
+    sendChunk(bout, true);
+}
+
 void VoiceStream::finish()
 {
     m_flushTimer.stop();
+
+    // Le filtre peut tenir une marque inachevée (un « `` » coupé en deux par le stream) :
+    // elle repasse par le filtre plutôt que d'être prononcée comme du texte.
+    if (!m_filtre.suspendu.isEmpty()) {
+        Filtre neuve;
+        m_buffer += nettoyerPourLaVoix(m_filtre.suspendu, neuve);
+        m_filtre.suspendu.clear();
+    }
+    if (m_filtre.dansBlocCode) {
+        qWarning() << "[voice] bloc de code jamais fermé dans la réponse → ignoré";
+        m_filtre.dansBlocCode = false;
+    }
+
     qCDebug(lcVoiceStream) << "finish · reste" << m_buffer.size() << "car · enabled"
                            << m_enabled << "· streamBroken" << m_streamBroken;
-    if (!m_buffer.trimmed().isEmpty()) {
-        const QString chunk = m_buffer.trimmed();
-        m_buffer.clear();
-        if (m_enabled && !m_streamBroken)
-            sendChunk(chunk);
-    } else {
-        m_buffer.clear();
-    }
-    // Le clock continue de tourner : l'avance se résorbe pendant que le
-    // serveur finit de lire. On ne la force pas à zéro ici.
+    const QString chunk = m_buffer.trimmed();
+    m_buffer.clear();
+    if (chunk.isEmpty() || !m_enabled || m_streamBroken)
+        return;
+
+    // LE DERNIER MORCEAU DOIT PARTIR. sendChunk() peut le refuser (file serveur ≥ 6 ou
+    // avance > 10 s) : avant, il retournait dans m_buffer alors que finish() venait
+    // d'ARRÊTER le heartbeat — il y restait jusqu'au reset() du tour suivant, et la fin
+    // du message n'était jamais dite.
+    m_finEnAttente = chunk;
+    m_finTimer.start();
+    envoyerLaFin();
+    if (!m_finEnAttente.isEmpty() && !m_streamBroken)
+        m_flushTimer.start();   // le heartbeat reprend, uniquement pour cette fin
 }
 
 void VoiceStream::stop()
 {
     m_buffer.clear();
+    m_finEnAttente.clear();
+    m_finTimer.invalidate();
+    m_filtre = Filtre();
     m_flushTimer.stop();
     m_firstChunkSent = false;
     m_charsQueued = 0;
@@ -397,6 +640,9 @@ void VoiceStream::stop()
 void VoiceStream::reset()
 {
     m_buffer.clear();
+    m_finEnAttente.clear();
+    m_finTimer.invalidate();
+    m_filtre = Filtre();      // un bloc de code ouvert au tour précédent ne se promène pas
     m_flushTimer.stop();
     m_firstChunkSent = false;
     m_charsQueued = 0;
@@ -415,8 +661,12 @@ QString VoiceStream::statusLine() const
     const QString etat = !m_enabled ? QStringLiteral("off")
                        : m_streamBroken ? QStringLiteral("perdu")
                                         : QStringLiteral("on");
-    return QStringLiteral("voice %1 · buffer %2 car · avance ≈ %3 s")
+    QString fin;
+    if (!m_finEnAttente.isEmpty())
+        fin = QStringLiteral(" · fin en attente %1 car").arg(m_finEnAttente.size());
+    return QStringLiteral("voice %1 · buffer %2 car · avance ≈ %3 s%4")
         .arg(etat)
         .arg(m_buffer.size())
-        .arg(QString::number(audioLead(), 'f', 1));
+        .arg(QString::number(audioLead(), 'f', 1))
+        .arg(fin);
 }

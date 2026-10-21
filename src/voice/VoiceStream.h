@@ -41,7 +41,8 @@ public:
     explicit VoiceStream(QObject *parent = nullptr);
     ~VoiceStream() override;
 
-    /// Morceau de texte streamé (contentChunk, sans le thinking).
+    /// Morceau de texte streamé (contentChunk, sans le thinking). Passe par le filtre
+    /// « ce qui peut être dit » : ni markdown, ni emoji (voir nettoyerPourLaVoix).
     void feed(const QString &chunk);
     /// Fin du tour : vide le buffer (flush forcé, même sans ponctuation finale).
     void finish();
@@ -61,6 +62,26 @@ public:
     /// Diagnostic court (pour /voice).
     QString statusLine() const;
 
+    /// État du filtre : il doit SURVIVRE aux découpages du stream. Un bloc ``` … ```
+    /// ou une marque « ** » peuvent tomber pile entre deux contentChunk.
+    struct Filtre {
+        bool dansBlocCode = false;   // à l'intérieur d'un bloc ``` … ```
+        QString suspendu;            // marque inachevée reportée au chunk suivant
+    };
+
+    /** Ne laisse que du texte et de la ponctuation.
+     *
+     * Motif, mesuré le 21/10 sur le serveur : des emojis seuls (« 😀🎧🔊⚠️✅👍 », 6 car)
+     * font partir le modèle en DÉRIVE — 163 s d'audio en 62 s de wall, et toute la file
+     * bloquée derrière. Le markdown (## ** - |) alourdit sans casser, mais il est
+     * illisible à l'oreille ; les blocs de code font buter le modèle (~10 car/s au lieu
+     * de 19). Donc : titres, puces, citations, tableaux, liens, balises HTML et code
+     * supprimes ou remis en prose ; tirets longs remplaces par une virgule (ou un point
+     * devant une majuscule) ; pictogrammes et caracteres non prononcables retires.
+     * Statique et sans socket : testable seul.
+     */
+    static QString nettoyerPourLaVoix(const QString &chunk, Filtre &etat);
+
 signals:
     /// Un chunk a été envoyé au serveur (pour logs/debug).
     void chunkSent(int chars, double estimatedSeconds);
@@ -70,9 +91,13 @@ signals:
 
 private:
     /// Envoie un chunk au serveur (démarrage auto si le serveur ne répond pas).
-    void sendChunk(const QString &text);
+    /// pourLaFin = true : c'est LE dernier morceau du tour ; s'il ne part pas il est
+    /// remis dans m_finEnAttente (et non dans m_buffer) pour être relancé.
+    void sendChunk(const QString &text, bool pourLaFin = false);
     /// Remet un chunk en tête de buffer (serveur pas prêt : on ne perd rien).
     void requeue(const QString &text);
+    /// Relance le dernier tronçon du tour tant que le serveur ne l'a pas accepté.
+    void envoyerLaFin();
     /// Mesure l'avance estimée du TTS sur la lecture (secondes d'audio en réserve).
     double audioLead() const;
     /// Découpe et envoie ce qui est mûr dans le buffer.
@@ -96,6 +121,9 @@ private:
     mutable QElapsedTimer m_lastSpawnAttempt;   // verrou anti-avalanche : 1 spawn / 30 s max
     mutable bool m_spawnAttempted = false;      // une tentative de spawn déjà faite
     QString m_buffer;              // texte pas encore envoyé
+    Filtre m_filtre;               // état du filtre, par tour
+    QString m_finEnAttente;         // dernier tronçon pas encore accepté par le serveur
+    QElapsedTimer m_finTimer;       // depuis quand on l'essaie (expiration évitée : bornée)
     bool m_enabled = false;
     bool m_firstChunkSent = false; // le premier son est-il sorti ?
     bool m_serverConfirmed = false; // le serveur a confirmé ≥1 envoi (sinon : jamais démarré)

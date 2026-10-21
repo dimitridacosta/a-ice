@@ -167,6 +167,12 @@ private slots:
     void serverLostMidStreamAbandonsTurn();
     void streamRecoversAfterServerLost();
     void statutPollDoesNotStealTheChunk();
+    void filtreSupprimeLeMarkdown();
+    void filtreSupprimeLesPictogrammes();
+    void filtreRemplaceLesTiretsLongs();
+    void filtreTraverseLeDecoupageDuStream();
+    void feedNeTransmitPasLesPictogrammes();
+    void dernierTronconPartMemeServeurEngorge();
 
 private:
     // VoiceStream branché sur le faux serveur, auto-spawn coupé (jamais de vrai ddvoice).
@@ -439,6 +445,173 @@ void TestVoiceStream::statutPollDoesNotStealTheChunk()
 
     QVERIFY2(!srv.receivedTexts().isEmpty(),
              "chunk perdu : le poll « statut » a consommé la connexion du serveur");
+}
+
+// Ce qui part au TTS ne doit être QUE du texte et de la ponctuation : le markdown riche
+// est illisible à l'oreille (et le code fait buter le modèle, mesuré à ~10 car/s contre
+// 19 en prose).
+void TestVoiceStream::filtreSupprimeLeMarkdown()
+{
+    VoiceStream::Filtre etat;
+    const QString brut = QStringLiteral(
+        "## Étape 1\n"
+        "**branche** le casque, puis `ddvoice --statut` :\n"
+        "| sortie | statut |\n"
+        "|---|---|\n"
+        "| casque | actif |\n"
+        "---\n"
+        "Consulte [la doc](https://exemple.com/doc) pour la suite.");
+    const QString out = VoiceStream::nettoyerPourLaVoix(brut, etat);
+
+    QVERIFY2(!out.contains(QLatin1Char('#')), QString("marque de titre restée : %1").arg(out).toUtf8().constData());
+    QVERIFY2(!out.contains(QLatin1Char('*')), QString("marque de gras restée : %1").arg(out).toUtf8().constData());
+    QVERIFY2(!out.contains(QLatin1Char('|')), QString("tableau non converti : %1").arg(out).toUtf8().constData());
+    QVERIFY2(!out.contains(QLatin1Char('`')), QString("backtick resté : %1").arg(out).toUtf8().constData());
+    QVERIFY(out.contains(QStringLiteral("branche le casque")));
+    QVERIFY(out.contains(QStringLiteral("ddvoice --statut")));   // le fond reste, pas le balisage
+    QVERIFY(out.contains(QStringLiteral("sortie, statut")));      // tableau remis en prose
+    QVERIFY(out.contains(QStringLiteral("casque, actif")));
+    QVERIFY2(!out.contains(QStringLiteral("exemple.com")), "URL envoyée à la voix");
+    QVERIFY2(!out.contains(QStringLiteral("https")), "lien resté en entier");
+    // Le libellé survit ; l'URL seule devient une pause lisible.
+    QVERIFY(out.contains(QStringLiteral("Consulte la doc pour la suite.")));
+    const QString brute_url = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("Consulte https://exemple.com/doc pour la suite."), etat);
+    QVERIFY2(!brute_url.contains(QStringLiteral("exemple.com")),
+             QString("URL crue prononcée : %1").arg(brute_url).toUtf8().constData());
+    QVERIFY2(brute_url.contains(QStringLiteral("un lien")),
+             QString("URL crue sans remplacement lisible : %1").arg(brute_url).toUtf8().constData());
+}
+
+// Mesuré le 21/10 sur le serveur : « 😀🎧🔊⚠️✅👍 » seuls → 163,04 s d'audio en 62 s de
+// wall (dérive totale, toute la file bloquée derriere). Un pictogramme ne part jamais.
+void TestVoiceStream::filtreSupprimeLesPictogrammes()
+{
+    VoiceStream::Filtre etat;
+    const QString seuls = VoiceStream::nettoyerPourLaVoix(QStringLiteral("😀🎧🔊⚠️✅👍"), etat);
+    QVERIFY2(seuls.trimmed().isEmpty(),
+             QString("emojis laissés passer : %1").arg(seuls).toUtf8().constData());
+
+    const QString melange = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("Sortie active ✅ volume 67 🎚️"), etat);
+    // trim() seulement dans le test : le filtre ne trappe JAMAIS les espaces de bord,
+    // sinon deux chunks consécutifs (« Le casque » + « est bon ») se colleraient.
+    QCOMPARE(melange.trimmed(), QStringLiteral("Sortie active volume 67"));   // pas de trou laissé
+
+    const QString dingbats = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("Liste : → ouvrir • vérifier ★ brancher"), etat);
+    QVERIFY2(!dingbats.contains(QChar(0x2192)) && !dingbats.contains(QChar(0x2022))
+             && !dingbats.contains(QChar(0x2605)),
+             QString("flèche, puce ou étoile laissée passer : %1").arg(dingbats).toUtf8().constData());
+
+    const QString accents = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("Voilà une phrase à l’heure : 2 °C, très “propre”."), etat);
+    QVERIFY(accents.contains(QStringLiteral("Voilà")));
+    QVERIFY(accents.contains(QStringLiteral("l’heure")));
+    QVERIFY(accents.contains(QStringLiteral("2 °C")));              // ponctuation usuelle gardée
+    QVERIFY(accents.contains(QStringLiteral("“propre”")));
+}
+
+// Demande de Dimitri : pas de tiret long à l'oreille — virgule, ou point si une phrase
+// commence juste après.
+void TestVoiceStream::filtreRemplaceLesTiretsLongs()
+{
+    VoiceStream::Filtre etat;
+    const QString simple = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("Voici le casque — il faut ouvrir le mixeur"), etat);
+    QVERIFY2(!simple.contains(QChar(0x2014)), "tiret long laissé");
+    QVERIFY2(simple.contains(QStringLiteral("casque, il faut")),
+             QString("tiret long non remplacé par une virgule : %1").arg(simple).toUtf8().constData());
+
+    const QString phrase = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("C'est clair — Voici la suite"), etat);
+    QVERIFY2(phrase.contains(QStringLiteral("clair. Voici")),
+             QString("tiret long devant une phrase non converti en point : %1").arg(phrase).toUtf8().constData());
+
+    const QString plage = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("Compte tenu de 2–3 secondes de latence"), etat);
+    QVERIFY2(plage.contains(QStringLiteral("2 à 3 secondes")),
+             QString("plage numérique illisible : %1").arg(plage).toUtf8().constData());
+}
+
+// Un bloc ``` ... ``` ou une marque ** peut tomber pile entre deux contentChunk.
+void TestVoiceStream::filtreTraverseLeDecoupageDuStream()
+{
+    VoiceStream::Filtre etat;
+    const QString avant = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("voiture ``` print(1)"), etat);
+    QVERIFY2(!avant.contains(QStringLiteral("print")),
+             QString("code prononcé : %1").arg(avant).toUtf8().constData());
+    QVERIFY(etat.dansBlocCode);                       // le bloc est ouvert, pas fini
+
+    const QString apres = VoiceStream::nettoyerPourLaVoix(QStringLiteral(" ``` fin"), etat);
+    QVERIFY(apres.contains(QStringLiteral("fin")));
+    QVERIFY(!apres.contains(QStringLiteral("print")));
+    QVERIFY2(!etat.dansBlocCode, "bloc de code resté ouvert après sa fermeture");
+
+    VoiceStream::Filtre marque;
+    const QString debut = VoiceStream::nettoyerPourLaVoix(QStringLiteral("**gras"), marque);
+    const QString suite = VoiceStream::nettoyerPourLaVoix(QStringLiteral(" et **fin**"), marque);
+    QVERIFY2(!debut.contains(QLatin1Char('*')) && !suite.contains(QLatin1Char('*')),
+             "marque de gras laissée passer à une frontière de stream");
+}
+
+// Le filtre est branché sur feed(), pas seulement disponible : un chunk d'emojis ne doit
+// rien envoyer du tout (et ne doit pas casser le chunk qui suit).
+void TestVoiceStream::feedNeTransmitPasLesPictogrammes()
+{
+    FakeTtsServer srv;
+    QVERIFY(srv.start());
+    auto v = makeStream(srv);
+    v->setEnabled(true);
+
+    v->feed(QStringLiteral("😀🎧🔊"));
+    QTest::qWait(250);
+    QVERIFY2(srv.receivedTexts().isEmpty(),
+             "un chunk d'emojis seuls est parti au serveur : dérive du modèle garantie");
+
+    v->feed(QStringLiteral("La phrase normale doit passer malgré les emojis ✅."));
+    QTest::qWait(400);
+    QVERIFY2(!srv.receivedTexts().isEmpty(), "phrase normale perdue à cause du filtre");
+    for (const QString &recu : srv.receivedTexts()) {
+        QVERIFY2(!recu.contains(QChar(0x2705)),
+                 QString("emoji reçu par le serveur : %1").arg(recu).toUtf8().constData());
+        QVERIFY(recu.contains(QStringLiteral("phrase")));
+    }
+}
+
+// Le dernier tronçon du tour doit partir. Avant le correctif, finish() envoyait UNE fois
+// puis arrêtait le heartbeat : si le serveur était engorgé (file ≥ 6), sendChunk() avait
+// remis le morceau dans m_buffer, où il restait jusqu'au reset() du tour suivant — la fin
+// du message n'était jamais dite.
+void TestVoiceStream::dernierTronconPartMemeServeurEngorge()
+{
+    FakeTtsServer srv;
+    QVERIFY(srv.start());
+    srv.setQueued(8);                     // serveur engorgé : rien n'est accepté
+    auto v = makeStream(srv);
+    v->setEnabled(true);
+
+    v->feed(QStringLiteral("Voici la fin du message sans ponctuation finale"));
+    QTest::qWait(300);
+    QVERIFY(srv.receivedTexts().isEmpty());      // backpressure respectée
+
+    v->finish();
+    QVERIFY2(v->statusLine().contains(QStringLiteral("fin en attente")),
+             "finish() n'a pas pris en charge le dernier tronçon refusé par le serveur");
+
+    srv.setQueued(0);                      // la lecture a repris de la place
+    QTest::qWait(500);                     // plusieurs heartbeats
+
+    const QString attendu = QStringLiteral("Voici la fin du message sans ponctuation finale");
+    bool recu = false;
+    for (const QString &t : srv.receivedTexts())
+        if (t == attendu)
+            recu = true;
+    QVERIFY2(recu,
+             QString("dernier tronçon jamais envoyé : %1")
+                 .arg(srv.receivedTexts().join(QStringLiteral(" | "))).toUtf8().constData());
+    QVERIFY(v->statusLine().contains(QStringLiteral("voice on")));
 }
 
 QTEST_MAIN(TestVoiceStream)
