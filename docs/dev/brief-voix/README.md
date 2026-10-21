@@ -138,11 +138,16 @@ Vérifié : `cmake --build build` **sur l'hôte échoue** (ECM / Extra CMake Mod
 - Serveur (`main`) : `de3411a` (racine) → `c599783` (multi-requêtes par connexion + journal
   fondé + `test_protocol.py`) → `4a01aff` (un seul lecteur ffplay + trous audio +
   `test_lecture.py`) → `8787fcd` (trou = après le début du tour) → `6363b9f` (un thread
-  par connexion).
+  par connexion) → `7ecd6c3` (**verrou d'instance `flock`** + `test_instance.py` +
+  `probe_ffplay.py` + trou audio journalisé avec son état complet).
 - **Aucun `.bak` ne subsiste** dans les deux repos (vérifié le 21/10, `find`) : la question
   des blobs intermédiaires est close, `git diff` suffit désormais.
-- Côté mémoire de l'assistant : commits `99aca4f`/`00d7fe1` puis `ecea80a` sur
-  `~/.config/a-ice` (`master`) — corps identique à ce miroir.
+- Côté mémoire de l'assistant : la version canonique vit dans
+  `~/.config/a-ice/memory/projects/voix-streaming-aice.md` (`master`), **resynchronisée juste
+  après chaque engagement de ce miroir** avec `sync-canonique.py` (tête de la mémoire +
+  corps de ce fichier) → corps identiques. ⚠️ Ne jamais `git commit -a` dans
+  `~/.config/a-ice` : d'autres fichiers modifiés y sont les mises à jour propres de
+  l'assistant, pas les nôtres.
 - Le 20/10, le kit de code de ce dossier a été supprimé (6 fichiers, déjà périmés).
 
 ## Incident du 20/10 — « plus de son » alors que ddvoice marchait
@@ -226,6 +231,44 @@ aucune autre connexion n'était servie — `--statut`, `--stop`, un autre client
 - Leçon de diagnostic : **un CLI qui dit « aucun serveur » ne prouve pas l'absence de
   serveur**. `cat /run/user/1000/ddvoice.pid` + `tail /run/user/1000/ddvoice.log` tranchent.
 
+## Incident du 21/10 (4) — DEUX SERVEURS en parallèle : la vraie cause du « charabia »
+Dans le journal de la session suivante (01:37 → 01:52), **après** les correctifs
+`4a01aff`/`6363b9f` : « modèle 0.6 B chargé en 8.7 s » apparaît **deux fois à la même
+seconde** (01:37:35), idem « inactif depuis 300 s → veille, extinction » (01:42:37), alors
+qu'aux autres démarrages ces lignes sont uniques. Un processus n'écrit pas une ligne deux
+fois : **deux instances de `voix_serveur.py` tournaient ensemble**, chacune avec son modèle,
+son thread audio et son ffplay → deux voix qui se marchent dessus, exactement « des milliers
+de personnes qui veulent parler ».
+
+**Cause : la garde anti-doublon laissait une fenêtre de ~9 s.** `principal()` demandait
+« qui répond sur `ddvoice.sock` ? » (timeout 2 s), **puis** chargeait le modèle (~9 s),
+**puis** `os.unlink(socket)` + `bind()`. Deux instances lancées ensemble (auto-spawn d'a-ice
++ un `ddvoice` qui croit le serveur absent) passent la garde toutes les deux, chargent en
+parallèle, et la dernière venue vole le socket en le `unlink`ant : les deux restent vivantes.
+
+Corrigé par `7ecd6c3` : `prendre_instance()` pose un **`flock` exclusif sur
+`$XDG_RUNTIME_DIR/ddvoice.lock` AVANT toute charge lourde** (et y écrit le PID), relâché à
+l'extinction. Le verrou tombe tout seul si le porteur est tué de force → pas de blocage
+éternel après un crash. `test_instance.py` teste l'invariant et non l'écriture : place prise
+→ seconde instance refusée → place reprise après libération → place d'un serveur vivant
+d'un autre PID non volable, puis libérée par sa mort brutale. Vérifié en réel contre le
+serveur en place : refus en **moins d'une seconde**, avant tout chargement —
+`serveur déjà vivant (pid 254959) → abandon : jamais deux serveurs`.
+
+Mesure faite au passage (`probe_ffplay.py` : 20 s de **silence numérique** — échantillons à
+zéro — envoyés avec les flags exacts du serveur, donc pipeline traversé sans rien faire
+sortir) : écriture bornée à **14,45 s** par la backpressure et ffplay terminant après
+**20,07 s** → **ffplay lit à 1× et n'avale rien** ; avec `-infbuf` l'écriture passe à 0,10 s
+sans changer la durée (20,06 s). L'hypothèse « le lecteur consommerait plus vite que la
+lecture » est mesurée fausse.
+
+Ce qui reste ouvert : sur le run **unique** de 02:10, 49 s d'audio ont été produites en 30 s
+de wall **sans qu'aucune `bride` ne se déclenche**, alors qu'un trou de 18,6 s était compté
+dans la même fenêtre. Ces deux faits ne sont pas réconciliables avec une avance honnête.
+Depuis `7ecd6c3`, chaque `TROU AUDIO` est journalisé avec son état complet (tailles des deux
+files, `écrit s / écoulé s / en file s`, synthèse en cours, lecteur vivant ou fermé) : le
+prochain tour de Dimitri tranchera avec des chiffres au lieu d'une hypothèse.
+
 ## Points morts réglés le 2026-10-20 (commit `f9ad8e1`, tests 10/10)
 - **Tests du chunking réel** : faux serveur in-process (`FakeServerThread`, `QLocalServer`
   dans SA PROPRE thread — sinon deadlock avec les `waitForReadyRead` bloquants).
@@ -249,22 +292,28 @@ aucune autre connexion n'était servie — `--statut`, `--stop`, un autre client
    « Protocole OK : multi-requêtes et mono-requête sont servis ».
 3. Lecteur audio : `.venv/bin/python test_lecture.py` → « Lecteur OK : un seul joueur à la
    fois, aucun process oublié, trous mesurés ».
-4. `ddvoice --statut` → JSON avec `modele`, `attente`, `lecture`, `avance_audio_s`,
+4. Instance unique : `.venv/bin/python test_instance.py` → « Verrou d'instance OK : jamais
+   deux serveurs ddVoice à la fois ». Le test réel, lui, est de relancer
+   `.venv/bin/python voix_serveur.py` pendant qu'un serveur tient la place : il doit répondre
+   « serveur déjà vivant (pid …) → abandon » en moins d'une seconde.
+5. Le journal ne doit **jamais** contenir deux fois la même ligne de démarrage à la même
+   seconde : c'est le révélateur de deux serveurs (§ incident 4).
+6. `ddvoice --statut` → JSON avec `modele`, `attente`, `lecture`, `avance_audio_s`,
    `vram_go`, `lecteurs_vivants`, `trous`, `trous_audio_s`. ⚠️ **deux tirets** : `ddvoice
    statut` enfile le mot comme texte à dire. ⚠️ Si le CLI dit « aucun serveur », **vérifier
    dans le serveur** : `cat /run/user/1000/ddvoice.pid` puis `tail /run/user/1000/ddvoice.log`
    (ce CLI a menti le 21/10 : il n'était pas capable de servir deux clients).
-5. Le log qui tranche : `tail -f /run/user/1000/ddvoice.log` doit montrer
+7. Le log qui tranche : `tail -f /run/user/1000/ddvoice.log` doit montrer
    `requête recue : texte (N car)` → `enfilé #N` → `premier son en … ms`.
    **Si on n'y voit que des `statut`, le chunk n'a jamais atteint le serveur** : problème
    côté client. S'il y a `TROU AUDIO` et/ou plusieurs `lecteurs_vivants`, problème côté
    serveur (lecture/starvation), pas côté mixage.
-6. Dans a-ice : `/voice on`, une question → du son en ~250-450 ms, `ddvoice.diag` dont le
+8. Dans a-ice : `/voice on`, une question → du son en ~250-450 ms, `ddvoice.diag` dont le
    `id` avance, et `coupe paragraphe · N car` / `coupe phrase · N car` dans
    `QT_LOGGING_RULES=aice.voice.debug=true` (`coupe virgule (secours)` doit rester rare).
-7. Rien ne sort **alors que** le log serveur montre `enfilé #N` + `premier son` : là
+9. Rien ne sort **alors que** le log serveur montre `enfilé #N` + `premier son` : là
    seulement `ffplay qq.wav` hors pipeline puis mixer ALSA (§ incident 20/10).
-8. Après toute modif de `VoiceStream.*` : **rebuild dans distrobox**, puis relancer 1.
+10. Après toute modif de `VoiceStream.*` : **rebuild dans distrobox**, puis relancer 1.
 
 ## Pièges
 1. **Son inaudible ≠ bug VoiceStream** : commencer par le mixer ALSA.
@@ -314,22 +363,43 @@ aucune autre connexion n'était servie — `--statut`, `--stop`, un autre client
 20. **Ne pas confondre TTFA initial et trou audio** : avant le premier son d'un tour le
     lecteur attend ~0,3-0,5 s (le modèle calcule) — ce n'est pas un défaut. Le marqueur est
     `CADENCE["ecrit_s"] > 0` : le son de ce tour a déjà commencé.
+21. **`wall_s` d'un bilan n'est PAS la vitesse du modèle** : il inclut les attentes de la
+    bride (`_attendre_la_place`) et l'attente de la file. Pour mesurer le modèle, envoyer un
+    texte `silencieux` (jamais bridé) : 300 car → ~6 s de wall pour ~15 s d'audio. Les
+    « RTF ≈ 1 » lus dans les bilans de ce fichier sont de fausses lectures, corrigées le 21/10.
+22. **Une ligne dupliquée dans `ddvoice.log` = deux processus**, pas un bug de journal :
+    `journal()` n'est appelé qu'une fois par événement. Deux « modèle chargé » à la même
+    seconde = deux serveurs (couper le doublon avant de chercher une cause audio).
+23. **ffplay n'avale pas l'audio plus vite qu'il ne joue** : mesuré (20 s de silence → fin à
+    20,07 s, écriture bridée à 14,45 s). Ne pas « corriger » la cadence en accusant le
+    lecteur ; la backpressure du pipe est réelle et saine.
 
 ## Pistes restantes (non bloquantes)
 - **Merger `voice` dans `main`** une fois validé à l'usage : les correctifs sont prouvés aux
   tests et aux instruments ; il reste l'approbation à l'oreille de Dimitri.
-- Surveiller `trous` / `trous_audio_s` (statut) et `coupe virgule (secours)` (client) : si
-  des trous reviennent **alors qu'un seul lecteur joue**, c'est le débit du modèle qui ne
-  tient plus la lecture (RTF ≈ 1 mesuré sur les textes ≥ 150 car) — la piste serait alors
-  `CHUNK_STEPS` / découpage côté serveur, pas le client.
-- Creuser `ddvoice --eteindre` : n'a pas arrêté l'instance auto-spawnée par a-ice.
+- Surveiller `trous` / `trous_audio_s` (statut) et `coupe virgule (secours)` (client). À ne
+  pas confondre avec un problème de débit : mesuré le 21/10 sur des textes `silencieux`
+  (donc sans bridage), le modèle sort **49 car/s** pour 19 car/s parlés → **~2,5 × le temps
+  réel**. Il y a de la marge ; un trou vient de la cadence de la file, pas du GPU.
+- Le compteur d'avance est grossier : `_avance() = ecrit_s − écoulé + en_file_s`, et quand
+  le lecteur transfère un chunk de `en_file_s` vers `ecrit_s` la somme **ne change pas**.
+  Ce n'est pas un bug (c'est un garde-fou conservateur), mais ça explique des `bride` qui
+  traînent : les attendre n'est pas un défaut audible tant qu'il reste de l'audio en sortie.
+- **Premier à relire après un trou** : la nouvelle ligne `TROU AUDIO … · textes en file : N ·
+  audio en file : N · écrit X s en Y s · en file Z s · synthèse en cours : … · lecteur : …`.
+  Les deux gros trous du run unique de 02:10 (18,6 s et 12,0 s) ont été comptés pendant que
+  le modèle produisait 49 s d'audio en 30 s de wall **sans aucune `bride`** : ces chiffres
+  diront enfin si c'est la file, le lecteur, ou la mesure qui est fautive.
+- Creuser `ddvoice --eteindre` : n'a pas arrêté l'instance auto-spawnée par a-ice —
+  **plausible maintenant que l'incident 4 est connu** : le socket avait été volé par une
+  seconde instance, donc `--eteindre` parlait à un serveur qui n'était plus le propriétaire
+  de tout. À revérifier avec le verrou d'instance en place.
 - Eventuellement installer `sox` (annoncé « command not found » au chargement ; le pipeline
   utilisé ne s'en sert pas).
 - Reprendre l'incident ALSA du 20/10 **seulement** si le log serveur montre `enfilé #N` +
   `premier son` sans son audible : les incidents (mixer / connexion perdue / voix
-  superposées / client muet) ont des signatures opposées et le log serveur tranche entre eux.
-  `enfilé #N` + `premier son` sans son audible : les deux incidents ont des signatures
-  opposées, et le log serveur tranche entre eux.
+  superposées / client muet / deux serveurs) ont des signatures opposées et le log serveur
+  tranche entre eux.
 - Reprise VRAIE (re-synthèse) si le serveur meurt en plein stream : aujourd'hui on
   abandonne le tour proprement sans rejouer le texte perdu.
 - Faux serveur de test : ne simule pas encore l'auto-spawn (coupé en test).
