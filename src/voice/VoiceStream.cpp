@@ -220,6 +220,10 @@ const QRegularExpression CUETON(multiligne(QStringLiteral("^ {0,3}[-+*\x{00b7}][
 const QRegularExpression CITATION(multiligne(QStringLiteral("^ {0,3}>[ \\t]*")));
 const QRegularExpression REGLE_H(multiligne(QStringLiteral("^ {0,3}[-*_]{3,}[ \\t]*$")));
 const QRegularExpression MARQUES(QStringLiteral("[*_]{2,}|~{2,}"));
+// Caractères invisibles : ils ne se prononcent pas, et ils cassent les ancres de début
+// de ligne si on les retire après les règles structurelles (ZWSP devant « ## »).
+const QRegularExpression INVISIBLES(QStringLiteral(
+    "[\\x{00AD}\\x{200B}-\\x{200D}\\x{2060}\\x{FE00}-\\x{FE0F}\\x{FEFF}]"));
 
 // Recollage : un caractère retiré ne doit pas laisser de trou dans la phrase.
 const QRegularExpression POINTS_SUSPENDUS(QStringLiteral("\\.{3}"));
@@ -328,15 +332,23 @@ QString VoiceStream::nettoyerPourLaVoix(const QString &chunk, Filtre &etat)
     txt = rangees.join(QLatin1Char('\n'));
 
     // 4. Structures et marques.
+    txt.remove(INVISIBLES);                     // avant les ancres : un ZWSP devant « ## »
     txt.replace(LIEN_IMAGE, QStringLiteral("\\1"));   // ![alt](url) → alt
     txt.replace(LIEN, QStringLiteral("\\1"));         // [texte](url) → texte
     txt.replace(URL, QStringLiteral("un lien"));      // une URL ne se prononce pas
     txt.replace(BALISE_HTML, QString());              // <br>, <b> …
-    txt.replace(TITRE, QString());                    // « ## Étape 1 » → « Étape 1 »
-    txt.replace(CITATION, QString());                 // « > cité » → « cité »
-    txt.replace(CUETON, QString());                   // « - ouvrir » → « ouvrir »
-    txt.replace(REGLE_H, QStringLiteral("\n\n"));     // « ---- » → vraie pause
+    txt.replace(REGLE_H, QStringLiteral("\n\n"));     // « ---- » → vraie pause (avant MARQUES,
+                                                      // sinon « *** » deviendrait un débris)
     txt.replace(MARQUES, QString());                  // **gras** __gras__ ~~barré~~
+    // Les marques font AVANT les titres : mesuré le 21/10, le serveur a reçu
+    // « ## Ce qui est déjà tranché … » parce que le LLM écrit « **## Titre** » — dans
+    // l'autre ordre, MARQUES retirait les étoiles APRÈS TITRE et les « # » survivaient.
+    // Deux passes : retirer une marque peut révéler un titre en début de ligne.
+    for (int passe = 0; passe < 2; ++passe) {
+        txt.replace(TITRE, QString());            // « ## Étape 1 » → « Étape 1 »
+        txt.replace(CITATION, QString());         // « > cité » → « cité »
+        txt.replace(CUETON, QString());           // « - ouvrir » → « ouvrir »
+    }
 
     // 5. Caractère par caractère. « — » ne se prononce pas : il devient une virgule,
     //    ou un point quand ce qui suit commence une phrase (choix de Dimitri, qui ne

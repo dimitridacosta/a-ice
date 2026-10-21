@@ -168,6 +168,7 @@ private slots:
     void streamRecoversAfterServerLost();
     void statutPollDoesNotStealTheChunk();
     void filtreSupprimeLeMarkdown();
+    void filtreTitresEnGrasEtListesNumerotees();
     void filtreSupprimeLesPictogrammes();
     void filtreRemplaceLesTiretsLongs();
     void filtreTraverseLeDecoupageDuStream();
@@ -485,6 +486,45 @@ void TestVoiceStream::filtreSupprimeLeMarkdown()
 
 // Mesuré le 21/10 sur le serveur : « 😀🎧🔊⚠️✅👍 » seuls → 163,04 s d'audio en 62 s de
 // wall (dérive totale, toute la file bloquée derriere). Un pictogramme ne part jamais.
+void TestVoiceStream::filtreTitresEnGrasEtListesNumerotees()
+{
+    // Capture réelle du 21/10 (11:10, client reconstruit) : le serveur a recu
+    // « ## Ce qui est déjà tranché (les pivots vs plan 17)1. Le ui ne construi… ».
+    // Les trois formes ci-dessous sont les candidates ; aucune ne doit laisser un « # ».
+    VoiceStream::Filtre etat;
+
+    const QString gras_autour = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("**## Ce qui est déjà tranché (les pivots vs plan 17)**\n"
+                       "1. Le ui ne construit rien.\n"), etat);
+    QVERIFY2(!gras_autour.contains(QLatin1Char('#')),
+             QString("titre en gras : marque de titre restée : %1").arg(gras_autour).toUtf8().constData());
+    QVERIFY(gras_autour.contains(QStringLiteral("Ce qui est déjà tranché")));
+    QVERIFY(gras_autour.contains(QStringLiteral("1. Le ui ne construit rien.")));
+
+    const QString gras_dedans = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("## **Ce qui est déjà tranché**\n1. Le ui ne construit rien."), etat);
+    QVERIFY2(!gras_dedans.contains(QLatin1Char('#')),
+             QString("titre avec gras interne : %1").arg(gras_dedans).toUtf8().constData());
+
+    // Un caractère invisible devant le « # » casse l'ancre de début de ligne.
+    const QString invisibles = VoiceStream::nettoyerPourLaVoix(
+        QString(QChar(0x200B)) + QStringLiteral("## Étape suivante\n")
+            + QString(QChar(0xFEFF)) + QStringLiteral("## Encore une\n"), etat);
+    QVERIFY2(!invisibles.contains(QLatin1Char('#')),
+             QString("caractère invisible avant le titre : %1").arg(invisibles).toUtf8().constData());
+    QVERIFY2(!invisibles.contains(QChar(0x200B)) && !invisibles.contains(QChar(0xFEFF)),
+             "caractère non prononçable laissé dans le texte");
+
+    // Liste numérotée : les chiffres et le point sont prononçables, ils restent.
+    const QString numerotee = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("## Ce qui est tranché\n1. **Le ui** ne construit rien\n"
+                       "2. La voix suit\n"), etat);
+    QVERIFY2(!numerotee.contains(QLatin1Char('#')),
+             QString("liste numérotée : %1").arg(numerotee).toUtf8().constData());
+    QVERIFY(numerotee.contains(QStringLiteral("1. Le ui ne construit rien")));
+    QVERIFY(numerotee.contains(QStringLiteral("2. La voix suit")));
+}
+
 void TestVoiceStream::filtreSupprimeLesPictogrammes()
 {
     VoiceStream::Filtre etat;
