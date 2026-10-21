@@ -34,11 +34,14 @@ tags: [aice, voix, tts, ddvoice, streaming, brief-dev]
 # Voix streaming a-ice — brief pour un agent de dev
 
 > Ce fichier est la **version canonique** du brief. Miroir dans le repo client :
-> `~/projects/ai/projects/a-ice/docs/dev/brief-voix/README.md` (corps identique, engagé à
-> la même date). Le kit de 6 copies de code que contenait ce dossier miroir a été
-> **supprimé le 20/10** : instantanés déjà périmés 30 min après création, et dangereux
-> à éditer par erreur. Le code unique est dans `src/voice/`, `tests/` et
-> `~/projects/ai/projects/faster-qwen3-tts/` — on **référence**, on ne recopie pas.
+> `~/projects/ai/projects/a-ice/docs/dev/brief-voix/README.md`. Le corps est **repris
+> intégralement du miroir à partir de l'ancre `## Le pipeline en une phrase`** : seuls les
+> préambules diffèrent (volontairement), et cette tête est **produite par
+> `docs/dev/brief-voix/sync-canonique.py`**, jamais tapée à la main. Contrôler avec
+> `sync-canonique.py --verifier` (et non en lisant ce préambule). Le kit de 6 copies de code
+> que contenait ce dossier miroir a été **supprimé le 20/10** : instantanés déjà périmés 30 min
+> après création, et dangereux à éditer par erreur. Le code unique est dans `src/voice/`,
+> `tests/` et `~/projects/ai/projects/faster-qwen3-tts/` — on **référence**, on ne recopie pas.
 
 """
 

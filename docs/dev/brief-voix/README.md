@@ -14,7 +14,8 @@ tags: [aice, voix, tts, ddvoice, streaming, brief-dev]
 > `src/voice/`, `tests/` et `~/projects/ai/projects/faster-qwen3-tts/`. Ne recopie pas :
 > référence.
 > Version canonique (mémoire de l'assistant) :
-> `~/.config/a-ice/memory/projects/voix-streaming-aice.md`.
+> `~/.config/a-ice/memory/projects/voix-streaming-aice.md` — alignement contrôlé par
+> `python3 docs/dev/brief-voix/sync-canonique.py --verifier`, pas à l'œil.
 
 ## Le pipeline en une phrase
 Le texte que l'LLM produit arrive par `LlamaClient::contentChunk` (SSE, jamais le
@@ -22,15 +23,31 @@ thinking) → `VoiceStream` (C++, dans a-ice) le découpe en chunks adaptatifs �
 au **serveur ddvoice** (socket unix, Python/faster-qwen3-tts, CUDA graphs) → chunks PCM
 joués par **ffplay** dès leur disponibilité (TTFA ~250-450 ms).
 
+## Carte d'entrée (à lire en premier)
+- **Où on en est** : client sur la branche **`voice`** (non mergée dans `main`), serveur
+  sur `main` (`875d1bc`). Le pipeline est **sain aux mesures** : `trous: 0`,
+  `trous_audio_s: 0.0`, `derives: 0`, 21/21 tests C++.
+- **Trois commandes qui disent la vérité** (dans cet ordre) :
+  `cat /run/user/1000/ddvoice.pid` → le serveur est-il vivant ? ·
+  `tail -n 20 /run/user/1000/ddvoice.log` → y a-t-il `requête recue : texte` (client
+  vivant) ou seulement des `statut` (client muet) ? · `~/.local/bin/ddvoice --statut` →
+  compteurs. Le CLI peut mentir (§ incident 3), le log serveur jamais.
+- **Deux façons de conclure à tort que « la voix est cassée »** : `/voice` éteint dans
+  `a-ice.conf` (piège 28), ou un a-ice lancé **avant** le dernier rebuild (piège 26).
+  Les deux sont arrivés pour de vrai le 21/10.
+- **Prochaine action unique** : faire parler le **binaire reconstruit** (`build/a-ice`,
+  `/voice on`) et valider **à l'oreille** — pas de markdown lu, pas de pictogramme, fin de
+  phrase prononcée jusqu'au bout. Ce feu vert déclenche le merge `voice` → `main`.
+
 ## Les deux repos
 
 | Rôle | Chemin |
 |---|---|
 | Client a-ice (Qt6/C++17) | `~/projects/ai/projects/a-ice/` — repo git, travail voix sur la branche **`voice`** |
-| Module voix | `src/voice/VoiceStream.h` (136 l.) + `src/voice/VoiceStream.cpp` (672 l.) |
+| Module voix | `src/voice/VoiceStream.h` + `src/voice/VoiceStream.cpp` (136 + 672 l. comptées le 21/10) |
 | Branchements UI | `src/ChatWidget.cpp` → `setupVoice()` (appelée l.110, définie l.113), `/voice` → `handleVoiceCommand()` (l.805) |
 | Source du flux texte | `src/llama_client.cpp` → signal `contentChunk` (émit l.375/482/494/501) |
-| Tests (in-process, faux serveur) | `tests/test_voicestream.cpp` (618 l., 21 tests) → `QT_QPA_PLATFORM=offscreen build/test_voicestream` |
+| Tests (in-process, faux serveur) | `tests/test_voicestream.cpp` (618 l., **21 tests** comptés le 21/10) → `QT_QPA_PLATFORM=offscreen build/test_voicestream` |
 | Test protocole client ↔ serveur | `faster-qwen3-tts/test_protocol.py` (166 l.) — parle au **vrai** socket ; textes `silencieux` → synthétisés mais **pas joués** |
 | Test du lecteur audio | `faster-qwen3-tts/test_lecture.py` (123 l.) — invariant « un seul ffplay vivant », process oubliés, trous audio (`Popen` simulé : **aucun son**) |
 | Serveur TTS (Python) | `~/projects/ai/projects/faster-qwen3-tts/voix_serveur.py` (700 l.) — **repo git** depuis le 20/10 (branche `main`, commit racine `de3411a`) ; client CLI : `voix_client.py` |
@@ -181,7 +198,9 @@ Vérifié : `cmake --build build` **sur l'hôte échoue** (ECM / Extra CMake Mod
   → `fb4ab81` (`m_voice->reset()` à chaque tour) → `12c328c` (connexion neuve par requête)
   → `b42115f` (brief) → `a66f599` (découpe naturelle : paragraphe → phrase → virgule en secours)
   → `a785c8c` + `5c986ec` (brief) → `1aebe0a` (**filtre « texte + ponctuation seulement »** et
-  **dernier tronçon relancé**). L'avance (`audioLead()`) ne pilote plus la taille des chunks.
+  **dernier tronçon relancé**) → `0d56940` + le présent engagement (brief ; les engagements
+  de brief ultérieurs ne sont pas comptés ci-dessus). L'avance (`audioLead()`) ne pilote plus
+  la taille des chunks.
 - Serveur (`main`) : `de3411a` (racine) → `c599783` (multi-requêtes par connexion + journal
   fondé + `test_protocol.py`) → `4a01aff` (un seul lecteur ffplay + trous audio +
   `test_lecture.py`) → `8787fcd` (trou = après le début du tour) → `6363b9f` (un thread
@@ -379,6 +398,9 @@ pleine à ce moment-là).
 10. Après toute modif de `VoiceStream.*` : **rebuild dans distrobox**, puis relancer 1.
 
 ## Pièges
+Plusieurs pièges redisent un point de la section **Validation** (CLI à deux tirets, croire
+le log serveur, mixer ALSA d'abord) : la Validation est l'ordre d'action, le piège est le
+pourquoi. Les supprimer de l'une des deux listes ferait perdre l'une des deux choses.
 1. **Son inaudible ≠ bug VoiceStream** : commencer par le mixer ALSA.
 2. `VoiceStream` a des `waitForReadyRead` **bloquants** : tout faux serveur de test doit
    vivre dans son propre thread (`FakeServerThread`), sinon deadlock.
@@ -441,8 +463,28 @@ pleine à ce moment-là).
     pas espérer que le modèle s'en débrouille.
 25. **Ne pas `trim()` un texte filtré à la volée** : le stream arrive par morceaux, et
     retirer l'espace de fin colle les mots du morceau suivant. Le trim est à l'envoi.
+26. **Un process relancé n'est PAS le binaire recompilé** : comparer `ps -o lstart -C a-ice`
+    au `stat -c '%y' build/a-ice`. Mesuré le 21/10 : a-ice (PID 200243) démarré à **02:03**,
+    binaire reconstruit à **03:43** → la conversation testée tournait sur l'ancien code, sans
+    filtre et sans le correctif du dernier tronçon. **Tout test à l'oreille fait sur un
+    process plus vieux que le build ne prouve rien** — c'est la première chose à vérifier
+    quand « on dirait que rien n'a changé ».
+27. **La veille éteint vraiment le serveur** : `--inactivite 1200` →
+    `inactif depuis 1200 s → veille, extinction` + `VRAM libérée` + plus de `ddvoice.pid`
+    (journal de 04:04:22). La requête suivante paie **~9 s de chargement sans aucun son** :
+    ce n'est pas un défaut, mais ça foire un test auditif si on ne s'y attend pas. Relancer
+    `.venv/bin/python voix_serveur.py --inactivite 1200` (ou `ddvoice "chauffe"`) avant.
+28. **L'état `/voice` est persisté** : `[voice] enabled` dans `~/.config/a-ice/a-ice.conf`.
+    Si la clé est `false`, rien ne sort quelle que soit la santé du serveur — mesuré le 21/10
+    avec un pipeline entier sain et `enabled=false`. À vérifier **avant** le mixer, avant le
+    code.
+29. **Un test auditif se fait sur le binaire reconstruit ET un serveur chaud ET `/voice on`**
+    : les trois conditions manquantes ensemble donnent exactement le même symptôme que le
+    correctif qui « ne marche pas ».
 
 ## Pistes restantes (non bloquantes)
+- **Prochaine action (la seule qui compte)** : relancer `build/a-ice` **après** le rebuild,
+  `/voice on`, et juger à l'oreille. Tout le reste de cette liste est subordonné à ce test.
 - **Merger `voice` dans `main`** une fois validé à l'usage : les correctifs sont prouvés aux
   tests et aux instruments ; il reste l'approbation à l'oreille de Dimitri.
 - Surveiller `trous` / `trous_audio_s` (statut) et `coupe virgule (secours)` (client). À ne
@@ -457,7 +499,13 @@ pleine à ce moment-là).
   audio en file : N · écrit X s en Y s · en file Z s · synthèse en cours : … · lecteur : …`.
   Les deux gros trous du run unique de 02:10 (18,6 s et 12,0 s) ont été comptés pendant que
   le modèle produisait 49 s d'audio en 30 s de wall **sans aucune `bride`** : ces chiffres
-  diront enfin si c'est la file, le lecteur, ou la mesure qui est fautive.
+  ces chiffres diront enfin si c'est la file, le lecteur, ou la mesure qui est fautive.
+  **Ce qui manque pour avancer : un reproduit.** Le recipe à tenter : serveur chaud, quatre
+  textes non `silencieux` de 300-900 car envoyés à la suite, `ddvoice --statut` (JSON complet
+  : `file_texts`, `avance_audio_s`, `trous`, `trous_audio_s`, `derives`, `lecteurs_vivants`)
+  échantillonné chaque seconde **pendant** la synthèse, puis lire les lignes `TROU AUDIO` du
+  tour. Si l'avance mesurée ne tombe jamais à 0 alors qu'un trou est compté, la faute est dans
+  `_avance()`, pas dans le GPU.
 - Creuser `ddvoice --eteindre` : n'a pas arrêté l'instance auto-spawnée par a-ice —
   **plausible maintenant que l'incident 4 est connu** : le socket avait été volé par une
   seconde instance, donc `--eteindre` parlait à un serveur qui n'était plus le propriétaire
@@ -473,8 +521,9 @@ pleine à ce moment-là).
 - Faux serveur de test : ne simule pas encore l'auto-spawn (coupé en test).
 - ~~Versionner `faster-qwen3-tts`~~ **fait le 20/10** : git init, commit racine
   `de3411a`, `.bak` archivés sur `archive/pre-antiderive`.
-- Regarder `VoiceStream.cpp.bak-20261020` (état intermédiaire hors git) puis le supprimer
-  ou le commit quelque part.
+- ~~Regarder `VoiceStream.cpp.bak-20261020` (état intermédiaire hors git) puis le supprimer
+  ou le commit quelque part~~ **clos** : re-vérifié au `find` le 21/10, **aucun `.bak` ne
+  subsiste** dans les deux repos — cette ligne contredisait la section « Git / état ».
 
 ## Voir aussi
 - `~/.config/a-ice/memory/projects/voix-streaming-aice.md` (version canonique)
