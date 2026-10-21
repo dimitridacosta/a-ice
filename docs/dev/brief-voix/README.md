@@ -26,7 +26,7 @@ joués par **ffplay** dès leur disponibilité (TTFA ~250-450 ms).
 ## Carte d'entrée (à lire en premier)
 - **Où on en est** : client sur la branche **`voice`** (non mergée dans `main`), serveur
   sur `main` (`875d1bc`). Le pipeline est **sain aux mesures** : `trous: 0`,
-  `trous_audio_s: 0.0`, `derives: 0`, 21/21 tests C++.
+  `trous_audio_s: 0.0`, `derives: 0`, 22/22 tests C++.
 - **Trois commandes qui disent la vérité** (dans cet ordre) :
   `cat /run/user/1000/ddvoice.pid` → le serveur est-il vivant ? ·
   `tail -n 20 /run/user/1000/ddvoice.log` → y a-t-il `requête recue : texte` (client
@@ -38,16 +38,19 @@ joués par **ffplay** dès leur disponibilité (TTFA ~250-450 ms).
 - **Prochaine action unique** : faire parler le **binaire reconstruit** (`build/a-ice`,
   `/voice on`) et valider **à l'oreille** — pas de markdown lu, pas de pictogramme, fin de
   phrase prononcée jusqu'au bout. Ce feu vert déclenche le merge `voice` → `main`.
+- **La vue qui tranche sur ce que le client envoie** : les aperçus `en_cours` / `attente` de
+  `ddvoice --statut` (validation 11). Un test C++ vert ne prouve pas l'ordre des règles du
+  filtre (§ incident 6).
 
 ## Les deux repos
 
 | Rôle | Chemin |
 |---|---|
 | Client a-ice (Qt6/C++17) | `~/projects/ai/projects/a-ice/` — repo git, travail voix sur la branche **`voice`** |
-| Module voix | `src/voice/VoiceStream.h` + `src/voice/VoiceStream.cpp` (136 + 672 l. comptées le 21/10) |
+| Module voix | `src/voice/VoiceStream.h` + `src/voice/VoiceStream.cpp` (136 + 684 l. comptées le 21/10) |
 | Branchements UI | `src/ChatWidget.cpp` → `setupVoice()` (appelée l.110, définie l.113), `/voice` → `handleVoiceCommand()` (l.805) |
 | Source du flux texte | `src/llama_client.cpp` → signal `contentChunk` (émit l.375/482/494/501) |
-| Tests (in-process, faux serveur) | `tests/test_voicestream.cpp` (618 l., **21 tests** comptés le 21/10) → `QT_QPA_PLATFORM=offscreen build/test_voicestream` |
+| Tests (in-process, faux serveur) | `tests/test_voicestream.cpp` (658 l., **22 tests** comptés le 21/10) → `QT_QPA_PLATFORM=offscreen build/test_voicestream` |
 | Test protocole client ↔ serveur | `faster-qwen3-tts/test_protocol.py` (166 l.) — parle au **vrai** socket ; textes `silencieux` → synthétisés mais **pas joués** |
 | Test du lecteur audio | `faster-qwen3-tts/test_lecture.py` (123 l.) — invariant « un seul ffplay vivant », process oubliés, trous audio (`Popen` simulé : **aucun son**) |
 | Serveur TTS (Python) | `~/projects/ai/projects/faster-qwen3-tts/voix_serveur.py` (700 l.) — **repo git** depuis le 20/10 (branche `main`, commit racine `de3411a`) ; client CLI : `voix_client.py` |
@@ -136,11 +139,15 @@ est retiré aussi.
 code (trois backticks) ou un `**` peut tomber pile entre deux `contentChunk` ; une marque de bloc
 inachevée (1–2 backticks en fin de chunk) est reportée au chunk suivant. Règles, dans
 l'ordre : blocs de code **supprimés** (le code n'est pas de la voix) → tableaux
-`| a | b |` remis en prose « a, b » et lignes de séparation supprimées → titres `##`,
-puces `- * + ·`, citations `>`, règles horizontales (deviennent une vraie pause),
-balises HTML, marques inline `** __ ~~` (le texte survit, la marque part) →
-`[libellé](url)` devient le libellé, **URL crue → « un lien »** (une URL ne se prononce
-pas) → caractère par caractère : whitelist de ce qui est prononçable (lettres et chiffres
+`| a | b |` remis en prose « a, b » et lignes de séparation supprimées → caractères invisibles
+retirés (ZWSP, ZWJ, sélecteurs de variante, BOM, trait d'union mou : ils cassent les ancres
+de début de ligne) → liens : `[libellé](url)` devient le libellé, **URL crue → « un lien »**
+(une URL ne se prononce pas) → balises HTML → règles horizontales (deviennent une vraie pause,
+**avant** les marques, sinon `***` devient un débris) → marques inline `** __ ~~` (le texte
+survit, la marque part) → **puis, en deux passes** : titres `##`, citations `>`, puces
+`- * + ·`. Cet ordre est mesuré, pas esthétique : le LLM entoure ses titres de gras et le
+piège est documenté à l'incident (6) → caractère par caractère : whitelist de ce qui est
+prononçable (lettres et chiffres
 de toutes les écritures, ponctuation usuelle, `€ ™ ° § ±`), **rejetés** : emoji (substituants
 inclus), pictogrammes, flèches, étoiles, dessin de tableaux, puces `• ‣ ⁃`, sélecteurs de
 variante, ZWJ, BOM, contrôles, et le balisage ASCII `` ` * ~ ^ | < > \ `` ; tirets longs
@@ -198,9 +205,9 @@ Vérifié : `cmake --build build` **sur l'hôte échoue** (ECM / Extra CMake Mod
   → `fb4ab81` (`m_voice->reset()` à chaque tour) → `12c328c` (connexion neuve par requête)
   → `b42115f` (brief) → `a66f599` (découpe naturelle : paragraphe → phrase → virgule en secours)
   → `a785c8c` + `5c986ec` (brief) → `1aebe0a` (**filtre « texte + ponctuation seulement »** et
-  **dernier tronçon relancé**) → `0d56940` + le présent engagement (brief ; les engagements
-  de brief ultérieurs ne sont pas comptés ci-dessus). L'avance (`audioLead()`) ne pilote plus
-  la taille des chunks.
+  **dernier tronçon relancé**) → `4697b00` (**titres markdown : marques retirées AVANT les
+  titres**, incident (6)) → engagements de brief (`0d56940`, `07e248e`, le présent) non
+  comptés ci-dessus. L'avance (`audioLead()`) ne pilote plus la taille des chunks.
 - Serveur (`main`) : `de3411a` (racine) → `c599783` (multi-requêtes par connexion + journal
   fondé + `test_protocol.py`) → `4a01aff` (un seul lecteur ffplay + trous audio +
   `test_lecture.py`) → `8787fcd` (trou = après le début du tour) → `6363b9f` (un thread
@@ -350,6 +357,33 @@ pleine à ce moment-là).
 - Prouvé par `dernierTronconPartMemeServeurEngorge()` : serveur annoncé à 8 dans la file →
   `finish()` → file vidée → **le morceau arrive**. Sans le correctif, le test FAIL.
 
+## Incident du 21/10 (6) — du markdown est quand même parti au TTS
+Après le filtre `1aebe0a`, le statut du serveur montre encore, à 11:10 :
+`en_cours : « ## Ce qui est déjà tranché (les pivots vs plan 17)1. Le ui ne construi… »`,
+chunks `#72` (1043 car) et `#73` (764 car), **zéro ligne `censure`** sur la séquence — donc
+le texte arrivait déjà « propre » côté serveur, avec ses `#` : le client n'avait pas filtré.
+Or le binaire lancé à 10:57 contenait bien le filtre (`nm -C build/a-ice | grep
+nettoyerPourLaVoix` → présent). Le doute ne restait pas : il fallait reproduire.
+
+**Cause : l'ordre des règles, pas leur contenu.** `TITRE` ancré sur un début de ligne
+(`^ {0,3}#{1,6}[ \t]+`) tournait **avant** `MARQUES`. Le modèle écrit ses titres en gras :
+`**## Ce qui est déjà tranché**`. La ligne commençait donc par `**`, `TITRE` ne matchait
+rien, puis `MARQUES` retirait les étoiles et **laissait `##` en début de ligne** —
+définitivement, aucune règle ne repassait après. Même famille de faute : un caractère
+invisible (ZWSP, BOM) devant `##` casse l'ancre de début de ligne s'il n'est retiré
+qu'à l'étape « caractère par caractère », c'est-à-dire après.
+
+Corrigé par `4697b00` : `REGLE_H` → `MARQUES` → `TITRE`/`CITATION`/`CUETON` **en deux
+passes** (retirer une marque peut révéler un titre), et les invisibles sont retirés **avant**
+toute ancre.
+
+- Prouvé par `filtreTitresEnGrasEtListesNumerotees()` : **FAIL avant le correctif**, avec
+  exactement la capture du serveur dans le message d'échec ; PASS après (22/22).
+- Leçon : **un filtre vert aux tests peut quand même laisser passer du markdown** si ses règles
+  ne sont pas dans l'ordre de ce que le LLM écrit réellement. La vue qui tranche n'est pas le
+  test unitaire mais **l'aperçu que le serveur a reçu** (`en_cours` / `attente` de
+  `ddvoice --statut`) : il ne doit contenir ni `#`, ni `*`, ni `|`, ni backtick, ni emoji.
+
 ## Points morts réglés le 2026-10-20 (commit `f9ad8e1`, tests 10/10)
 - **Tests du chunking réel** : faux serveur in-process (`FakeServerThread`, `QLocalServer`
   dans SA PROPRE thread — sinon deadlock avec les `waitForReadyRead` bloquants).
@@ -368,8 +402,8 @@ pleine à ce moment-là).
   dans `handleVoiceCommand`, relue dans `setupVoice()`.
 
 ## Validation (comment savoir que le pipeline est vivant)
-1. `QT_QPA_PLATFORM=offscreen ./build/test_voicestream` → **`21 passed, 0 failed`** (15 avant
-   le filtre voix + le dernier tronçon).
+1. `QT_QPA_PLATFORM=offscreen ./build/test_voicestream` → **`22 passed, 0 failed`** (15 avant
+   le filtre voix et le dernier tronçon, 21 avec le filtre, 22 avec le correctif des titres).
 2. Protocole client ↔ serveur (serveur lancé) : `.venv/bin/python test_protocol.py` →
    « Protocole OK : multi-requêtes et mono-requête sont servis ».
 3. Lecteur audio : `.venv/bin/python test_lecture.py` → « Lecteur OK : un seul joueur à la
@@ -395,7 +429,13 @@ pleine à ce moment-là).
    `QT_LOGGING_RULES=aice.voice.debug=true` (`coupe virgule (secours)` doit rester rare).
 9. Rien ne sort **alors que** le log serveur montre `enfilé #N` + `premier son` : là
    seulement `ffplay qq.wav` hors pipeline puis mixer ALSA (§ incident 20/10).
-10. Après toute modif de `VoiceStream.*` : **rebuild dans distrobox**, puis relancer 1.
+10. Après toute modif de `VoiceStream.*` : **rebuild dans distrobox**, vérifier que le process
+    relancé est **plus récent que le build** (piège 26), puis relancer 1.
+11. **Ce que le client envoie réellement** : les aperçus `en_cours` et `attente` de
+    `ddvoice --statut` (70 premiers caractères de ce que le serveur a reçu) ne doivent contenir
+    **ni `#`, `*`, `|`, backtick, ni emoji**. C'est la seule mesure directe de la barrière 1 ;
+    les tests C++ ne prouvent que la logique, pas l'ordre dans lequel elle s'applique au texte
+    d'un vrai modèle (§ incident 6).
 
 ## Pièges
 Plusieurs pièges redisent un point de la section **Validation** (CLI à deux tirets, croire
@@ -481,6 +521,10 @@ pourquoi. Les supprimer de l'une des deux listes ferait perdre l'une des deux ch
 29. **Un test auditif se fait sur le binaire reconstruit ET un serveur chaud ET `/voice on`**
     : les trois conditions manquantes ensemble donnent exactement le même symptôme que le
     correctif qui « ne marche pas ».
+30. **Des règles correctes dans le mauvais ordre produisent un filtre vert et inefficace** :
+    `TITRE` avant `MARQUES` laissait passer `## ` lorsque le modèle écrit `**## Titre**`
+    (incident 6). Pour un filtre, tester **les formes d'écriture du modèle**, pas seulement
+    chaque règle isolée — et contrôler ce que le serveur a reçu (`--statut`, `apercu`).
 
 ## Pistes restantes (non bloquantes)
 - **Prochaine action (la seule qui compte)** : relancer `build/a-ice` **après** le rebuild,
