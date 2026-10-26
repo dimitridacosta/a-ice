@@ -170,6 +170,7 @@ private slots:
     void filtreSupprimeLeMarkdown();
     void filtreLitLesSymbolesDuCodeInline();
     void filtreInlineCodeTraverseLeStream();
+    void filtrePointColleNestPasUneFinDePhrase();
     void filtreTitresEnGrasEtListesNumerotees();
     void filtreSupprimeLesPictogrammes();
     void filtreRemplaceLesTiretsLongs();
@@ -554,6 +555,20 @@ void TestVoiceStream::filtreInlineCodeTraverseLeStream()
     QVERIFY2(!joint.contains(QLatin1Char('`')), QString("backtick resté : %1").arg(joint).toUtf8().constData());
     QVERIFY2(joint.contains("pip install pytest"), QString("code inline nonlu malgré le découpage : %1").arg(joint).toUtf8().constData());
     QVERIFY2(joint.contains("maintenant"), QString("texte après le code inline perdu : %1").arg(joint).toUtf8().constData());
+}
+
+void TestVoiceStream::filtrePointColleNestPasUneFinDePhrase()
+{
+    // « AGENTS.md » n'est pas « agent point M D » : un point collé entre lettres =
+    // un composé, remplacé par un espace. Les décimales restent intactes.
+    VoiceStream::Filtre etat;
+    const QString out = VoiceStream::nettoyerPourLaVoix(
+        QStringLiteral("Je lis AGENTS.md, l'app tourne en 0.6B."), etat);
+
+    QVERIFY2(!out.contains("AGENTS.md"), QString("point collé resté : %1").arg(out).toUtf8().constData());
+    QVERIFY2(out.contains("AGENTS md"), QString("composé non espacé : %1").arg(out).toUtf8().constData());
+    QVERIFY2(out.contains("0.6"), QString("décimale abîmée : %1").arg(out).toUtf8().constData());
+    QVERIFY2(!out.contains("0 6"), QString("décimale espacée à tort : %1").arg(out).toUtf8().constData());
 }
 
 void TestVoiceStream::filtreSupprimeLesPictogrammes()

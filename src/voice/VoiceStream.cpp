@@ -213,6 +213,11 @@ QRegularExpression multiligne(const QString &motif)
 // Motif appliqué dans cet ordre : blocs de code, tableaux, liens, balises, structures
 // de ligne, marques inline, puis caractère par caractère.
 const QRegularExpression FENCE(QStringLiteral("```+"));
+// Un point COLLÉ entre deux lettres n'est pas une fin de phrase : « AGENTS.md » se dit
+// « AGENTS md », « itFlow.io » « itFlow io » — sinon le TTS le dirait « point »
+// (entendu le 26/10 : « agent point M D », Dimitri hilare). Les décimales (0.6B, 1.5)
+// ne matchent pas : la règle exige une lettre AVANT et une lettre APRÈS le point.
+const QRegularExpression POINT_COLLE(QStringLiteral("(?<=[A-Za-z])\\.(?=[A-Za-z])"));
 const QRegularExpression LIEN_IMAGE(QStringLiteral("!\\[([^\\]]*)\\]\\([^)]*\\)"));
 const QRegularExpression LIEN(QStringLiteral("\\[([^\\]]*)\\]\\([^)]*\\)"));
 const QRegularExpression URL(QStringLiteral("(?:https?://|www\\.)[^\\s)\\]]+"));
@@ -326,6 +331,10 @@ QString VoiceStream::nettoyerPourLaVoix(const QString &chunk, Filtre &etat)
             inline_lu += c;
     }
     txt = inline_lu;
+
+    // 2c. Le point collé entre deux lettres = un nom de fichier/domaine, pas une fin
+    //     de phrase : on le remplace par un espace (règle de Dimitri, 26/10).
+    txt.replace(POINT_COLLE, QStringLiteral(" "));
 
     // 3. Tableaux : « | sortie | actif | » devient « sortie, actif » ; les lignes de
     //    séparation (|---|---|) disparaissent.
