@@ -168,6 +168,8 @@ private slots:
     void streamRecoversAfterServerLost();
     void statutPollDoesNotStealTheChunk();
     void filtreSupprimeLeMarkdown();
+    void filtreLitLesSymbolesDuCodeInline();
+    void filtreInlineCodeTraverseLeStream();
     void filtreTitresEnGrasEtListesNumerotees();
     void filtreSupprimeLesPictogrammes();
     void filtreRemplaceLesTiretsLongs();
@@ -469,7 +471,8 @@ void TestVoiceStream::filtreSupprimeLeMarkdown()
     QVERIFY2(!out.contains(QLatin1Char('|')), QString("tableau non converti : %1").arg(out).toUtf8().constData());
     QVERIFY2(!out.contains(QLatin1Char('`')), QString("backtick resté : %1").arg(out).toUtf8().constData());
     QVERIFY(out.contains(QStringLiteral("branche le casque")));
-    QVERIFY(out.contains(QStringLiteral("ddvoice --statut")));   // le fond reste, pas le balisage
+    QVERIFY(out.contains(QStringLiteral("ddvoice statut")));   // le fond reste ; le tiret du code
+                                                                // inline est devenu un espace (26/10)
     QVERIFY(out.contains(QStringLiteral("sortie, statut")));      // tableau remis en prose
     QVERIFY(out.contains(QStringLiteral("casque, actif")));
     QVERIFY2(!out.contains(QStringLiteral("exemple.com")), "URL envoyée à la voix");
@@ -523,6 +526,34 @@ void TestVoiceStream::filtreTitresEnGrasEtListesNumerotees()
              QString("liste numérotée : %1").arg(numerotee).toUtf8().constData());
     QVERIFY(numerotee.contains(QStringLiteral("1. Le ui ne construit rien")));
     QVERIFY(numerotee.contains(QStringLiteral("2. La voix suit")));
+}
+
+void TestVoiceStream::filtreLitLesSymbolesDuCodeInline()
+{
+    VoiceStream::Filtre etat;
+    const QString brut = QStringLiteral(
+        "Lance `pip install pytest-foo` puis ouvre le fichier `voix_serveur.py`.");
+    const QString out = VoiceStream::nettoyerPourLaVoix(brut, etat);
+
+    QVERIFY2(!out.contains(QLatin1Char('`')), QString("backtick resté : %1").arg(out).toUtf8().constData());
+    QVERIFY2(!out.contains("pytest-foo"), QString("tiret du code inline non normalisé : %1").arg(out).toUtf8().constData());
+    QVERIFY2(!out.contains("serveur.py"), QString("point du code inline non normalisé : %1").arg(out).toUtf8().constData());
+    QVERIFY2(out.contains("pytest foo"), QString("mots du code inline non lus : %1").arg(out).toUtf8().constData());
+    QVERIFY2(out.contains("voix serveur py"), QString("fichier du code inline non lu : %1").arg(out).toUtf8().constData());
+}
+
+void TestVoiceStream::filtreInlineCodeTraverseLeStream()
+{
+    // Le backtick fermant tombe dans le chunk suivant : le contenu du code inline
+    // doit quand même être normalisé, et l'état survit au découpage du stream.
+    VoiceStream::Filtre etat;
+    const QString out1 = VoiceStream::nettoyerPourLaVoix(QStringLiteral("Lance `pip install"), etat);
+    const QString out2 = VoiceStream::nettoyerPourLaVoix(QStringLiteral(" pytest` maintenant."), etat);
+    const QString joint = out1 + out2;
+
+    QVERIFY2(!joint.contains(QLatin1Char('`')), QString("backtick resté : %1").arg(joint).toUtf8().constData());
+    QVERIFY2(joint.contains("pip install pytest"), QString("code inline nonlu malgré le découpage : %1").arg(joint).toUtf8().constData());
+    QVERIFY2(joint.contains("maintenant"), QString("texte après le code inline perdu : %1").arg(joint).toUtf8().constData());
 }
 
 void TestVoiceStream::filtreSupprimeLesPictogrammes()

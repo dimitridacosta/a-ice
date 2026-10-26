@@ -306,6 +306,27 @@ QString VoiceStream::nettoyerPourLaVoix(const QString &chunk, Filtre &etat)
         txt.truncate(fin);
     }
 
+    // 2b. INLINE `code` : entre backticks simples, on lit les mots — les symboles de
+    //     liaison (. _ - / …) deviennent des espaces (choix Dimitri 26/10 : un code
+    //     inline se parle, il ne s'épelle pas). État togglé char à char : il survit
+    //     aux découpage du stream, comme les blocs. Un ` orphelin (backtick jamais
+    //     fermé, markdown mal formé) étendrait la normalisation au reste du texte :
+    //     rare chez un LLM, et le résultat reste lisible — pas un incident au pire.
+    QString inline_lu;
+    inline_lu.reserve(txt.size());
+    for (const QChar &c : txt) {
+        if (c == QLatin1Char('`')) {
+            etat.dansCodeInline = !etat.dansCodeInline;
+            continue;
+        }
+        if (etat.dansCodeInline && !c.isLetterOrNumber() && !c.isSpace()
+            && !c.isLowSurrogate() && !c.isHighSurrogate())
+            inline_lu += QLatin1Char(' ');
+        else
+            inline_lu += c;
+    }
+    txt = inline_lu;
+
     // 3. Tableaux : « | sortie | actif | » devient « sortie, actif » ; les lignes de
     //    séparation (|---|---|) disparaissent.
     QStringList rangees;

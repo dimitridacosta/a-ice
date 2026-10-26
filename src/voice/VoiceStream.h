@@ -66,6 +66,8 @@ public:
     /// ou une marque « ** » peuvent tomber pile entre deux contentChunk.
     struct Filtre {
         bool dansBlocCode = false;   // à l'intérieur d'un bloc ``` … ```
+        bool dansCodeInline = false; // à l'intérieur d'un inline `code` : les symboles
+                                     // de liaison deviennent des espaces, on lit les mots
         QString suspendu;            // marque inachevée reportée au chunk suivant
     };
 
