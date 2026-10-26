@@ -19,8 +19,10 @@ Q_LOGGING_CATEGORY(lcVoiceStream, "aice.voice")
 // chunk un peu petit).
 static constexpr double CHARS_PER_SECOND = 18.5;
 // Plafond d'un chunk : le serveur redécoupe lui-même au-delà de 1200 chars
-// (anti-dérive AR de son côté) — on reste sous, paragraphes inclus.
-static constexpr int MAX_CHUNK_CHARS = 1100;
+// (anti-dérive AR de son côté) — on reste sous, paragraphes inclus. 500 ≈ 22 s de
+// voix au débit réel de Noémie (22,7 car/s, mesure du 26/10) : le mur d'un
+// « paragraphe dense », le découpage adaptatif coupe bien avant. Choix Dimitri.
+static constexpr int MAX_CHUNK_CHARS = 500;
 // Chunk « mûr » minimal : pas la peine d'envoyer 3 caractères.
 static constexpr int MIN_CHUNK_CHARS = 24;
 // Période du heartbeat flush (filet : ponctuation exotique, fin de stream).
