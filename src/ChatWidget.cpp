@@ -976,12 +976,15 @@ void ChatWidget::onSendMessage(const QString &text)
     setGenerating(true);
     startAssistantBubble();
 
-    // Nouveau tour vocal : on repart proprement. Un serveur TTS mort en plein stream
-    // laisse VoiceStream en « perdu » (feed() n'accumule plus) ; sans ce reset, la
-    // conversation entiere reste muette meme avec un serveur tout neuf (reset()
-    // n'etait appele que sur /new).
+    // Nouveau tour vocal : on repart proprement — et si l'ancienne réponse est encore
+    // en train de se lire, elle meurt MAINTENANT : stop() coupe le son en cours,
+    // vide la file serveur et le buffer ; un tour déjà fini = no-op inoffensif.
+    // (Reset() ne vidait que le buffer : l'ancien sujet continuait de se lire
+    // par-dessus le nouveau message. Demande de Dimitri le 26/10.) Le cas « serveur
+    // mort en plein stream » (VoiceStream en « perdu ») reste pris en charge : stop()
+    // repart de zéro comme reset() le faisait.
     if (m_voice)
-        m_voice->reset();
+        m_voice->stop();
 
     m_client->sendMessages(m_messages);
     scrollToBottom();
