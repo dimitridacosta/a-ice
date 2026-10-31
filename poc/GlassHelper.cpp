@@ -9,11 +9,14 @@
 
 #include <QDateTime>
 #include <QGuiApplication>
+#include <QImage>
+#include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QSettings>
+#include <QString>
 #include <QTimer>
 #include <QVector>
 
@@ -36,6 +39,28 @@ constexpr int kMinCardSide = 4;
 /// Fenetre de log des mesures de frames (nombre de frames).
 constexpr qlonglong kLogEvery = 240;
 
+/// Fond de controle pour les captures : damier gris clair + bandes. Une ombre est
+/// vue sur le bureau floute par KWin a l'usage ; hors ecran, ce fond sert de
+/// reference pour lire le degrade (ou sa coupure) a l'oeil, et rendre visible
+/// une carte translucide.
+void paintBackdrop(QPainter &painter, const QSize &size)
+{
+    const int cell = 80;
+    for (int y = 0; y < size.height(); y += cell) {
+        for (int x = 0; x < size.width(); x += cell) {
+            const bool lit = ((x / cell) + (y / cell)) % 2 == 0;
+            painter.fillRect(QRect(x, y, cell, cell),
+                             QColor(lit ? QStringLiteral("#9fb0c0")
+                                        : QStringLiteral("#7c8d9d")));
+        }
+    }
+
+    // Deux bandes tres claires : une ombre mal graduee y apparait en marches.
+    painter.fillRect(QRect(0, 60, size.width(), 14), QColor(QStringLiteral("#f2f6fa")));
+    painter.fillRect(QRect(0, size.height() - 150, size.width(), 14),
+                     QColor(QStringLiteral("#f2f6fa")));
+}
+
 } // namespace
 
 GlassHelper::GlassHelper(QObject *parent)
@@ -46,6 +71,7 @@ GlassHelper::GlassHelper(QObject *parent)
     m_pump = qEnvironmentVariableIsSet("AICE_PUMP")
         && qEnvironmentVariable("AICE_PUMP") != "0";
     m_hud = qEnvironmentVariable("AICE_HUD") != "0";
+    m_shadow = qEnvironmentVariable("AICE_SHADOW") != "0";
 }
 
 void GlassHelper::attach(QQuickWindow *window)
@@ -95,9 +121,20 @@ void GlassHelper::attach(QQuickWindow *window)
     connect(window, &QQuickWindow::frameSwapped, this, &GlassHelper::scheduleRefresh);
 
     applyRegions();
+
+    // Capture de controle (AICE_SHOT=/chemin.png) : permet de voir le rendu sans
+    // etre devant l'ecran. AICE_SHOT_QUIT=1 ferme l'appli juste apres.
+    if (qEnvironmentVariableIsSet("AICE_SHOT")) {
+        const QString path = qEnvironmentVariable("AICE_SHOT");
+        QTimer::singleShot(900, this, [this, path]() {
+            grabShot(path);
+            if (qEnvironmentVariable("AICE_SHOT_QUIT") == "1")
+                QGuiApplication::quit();
+        });
+    }
 }
 
-bool GlassHelper::grabWindow()
+bool GlassHelper::startMove()
 {
     if (!m_window)
         return false;
@@ -133,7 +170,8 @@ bool GlassHelper::isInside(const QQuickItem *item, const QQuickItem *ancestor)
     return false;
 }
 
-void GlassHelper::collect(QQuickItem *item, QQuickItem *sceneRoot, QVector<Card> &out) const
+void GlassHelper::collect(QQuickItem *item, QQuickItem *sceneRoot, QVector<Card> &out,
+                          int &excluded) const
 {
     if (!item)
         return;
@@ -157,13 +195,27 @@ void GlassHelper::collect(QQuickItem *item, QQuickItem *sceneRoot, QVector<Card>
                 r = r.intersected(clip.toRect());
 
             if (r.width() > kMinCardSide && r.height() > kMinCardSide) {
+                // L'alpha effectif, en remontant jusqu'a la scene : une carte que
+                // le fade rend invisible ne dessine rien, donc elle n'a rien a
+                // faire dans le verre (ni flou, ni captation des clics).
+                qreal alpha = child->opacity();
+                for (const QQuickItem *p = child->parentItem(); p && p != sceneRoot; p = p->parentItem())
+                    alpha *= p->opacity();
+
+                if (alpha < 0.01) {
+                    // Rien de dessine : rien dans le verre (ni flou, ni clics).
+                    ++excluded;
+                    continue;
+                }
+
                 Card c;
                 c.rect = r;
                 c.radius = child->property("glassRadius").toInt();
+                c.alpha = alpha;
                 out.push_back(c);
             }
         }
-        collect(child, sceneRoot, out);
+        collect(child, sceneRoot, out, excluded);
     }
 }
 
@@ -175,20 +227,31 @@ void GlassHelper::applyRegions()
     QQuickItem *sceneRoot = m_window->contentItem();
     QVector<Card> cards;
     cards.reserve(64);
-    collect(sceneRoot, sceneRoot, cards);
+    int excluded = 0;
+    collect(sceneRoot, sceneRoot, cards, excluded);
 
     QRegion region;
     for (const Card &c : cards)
         region = region.united(roundedRegion(c.rect, c.radius));
     region = region.intersected(QRect(0, 0, m_window->width(), m_window->height()));
 
+    m_lastCards = cards;
+
+    // Le compte d'exclusions est une information distincte : elle change sans que
+    // le nombre de cartes change (une bulle que le fade eteint ne fait plus partie
+    // du verre, mais le verre en compte toujours d'autres).
+    if (qEnvironmentVariable("AICE_DEBUG") == "1" && excluded != m_excludedShown) {
+        m_excludedShown = excluded;
+        fprintf(stderr, "a-ice M1 : bulles exclues du verre (alpha trop faible) : %d\n", excluded);
+    }
+
     if (m_cards != int(cards.size())) {
         m_cards = int(cards.size());
         emit cardsChanged();
         if (qEnvironmentVariable("AICE_DEBUG") == "1") {
             for (const Card &c : cards)
-                fprintf(stderr, "a-ice M1 : carte verre %dx%d @ %d,%d r=%d\n",
-                        c.rect.width(), c.rect.height(), c.rect.x(), c.rect.y(), c.radius);
+                fprintf(stderr, "a-ice M1 : carte verre %dx%d @ %d,%d r=%d alpha=%.2f\n",
+                        c.rect.width(), c.rect.height(), c.rect.x(), c.rect.y(), c.radius, c.alpha);
         }
     }
 
@@ -201,6 +264,36 @@ void GlassHelper::applyRegions()
     // hors des cartes, les clics traversent la fenetre (indispensable en overlay).
     m_window->setMask(region);
     KWindowEffects::enableBlurBehind(m_window, true, region);
+}
+
+void GlassHelper::grabShot(const QString &path)
+{
+    if (!m_window)
+        return;
+
+    const QSize size(int(m_window->width()), int(m_window->height()));
+    const QImage scene = m_window->grabWindow();
+
+    QImage out(size, QImage::Format_ARGB32);
+    QPainter painter(&out);
+    paintBackdrop(painter, size);
+    if (!scene.isNull())
+        painter.drawImage(0, 0, scene);
+
+    // AICE_DEBUG=1 : les cartes de verre sont entourees, pour lire ou sont les
+    // cartes et comment l'ombre deborde (ou pas) au-dela d'elles.
+    if (qEnvironmentVariable("AICE_DEBUG") == "1") {
+        painter.setPen(QPen(QColor(QStringLiteral("#ff2fd0")), 1));
+        painter.setBrush(Qt::NoBrush);
+        for (const Card &c : m_lastCards)
+            painter.drawRoundedRect(c.rect, c.radius, c.radius);
+    }
+    painter.end();
+
+    if (out.save(path))
+        fprintf(stderr, "a-ice M1 : capture %s\n", qUtf8Printable(path));
+    else
+        fprintf(stderr, "a-ice M1 : capture impossible dans %s\n", qUtf8Printable(path));
 }
 
 void GlassHelper::persistPosition()

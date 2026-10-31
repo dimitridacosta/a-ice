@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QRegion>
+#include <QVector>
 #include <QtGlobal>
 
 class QQuickItem;
@@ -39,6 +40,9 @@ class GlassHelper : public QObject
     Q_PROPERTY(bool pump READ pump CONSTANT)
     /// Affichage des mesures dans la fenetre (AICE_HUD=0 pour cacher).
     Q_PROPERTY(bool hud READ hud CONSTANT)
+    /// Ombres de carte activee au demarrage (AICE_SHADOW=0 pour les couper, et
+    /// mesurer ainsi ce qu'elles coutent). Se bascule aussi depuis le badge.
+    Q_PROPERTY(bool shadow READ shadow CONSTANT)
 
 public:
     explicit GlassHelper(QObject *parent = nullptr);
@@ -49,7 +53,9 @@ public:
 
     /// Attrape la fenetre : deplacement natif KWin/Wayland si le composeur le
     /// sait faire. Renvoie false si c'est au QML de deplacer a la main.
-    Q_INVOKABLE bool grabWindow();
+    /// (Nomme startMove et non grabWindow : QQuickWindow a deja un grabWindow()
+    /// qui, lui, capture une image.)
+    Q_INVOKABLE bool startMove();
 
     /// Les cartes filles de cet item sont retranchees de sa zone (le ListView) :
     /// une bulle sortie du viewport ne doit ni flouter ni capter les clics.
@@ -57,6 +63,11 @@ public:
 
     /// Recalcule la region de verre (les appels multiples sont fusionnes).
     Q_INVOKABLE void scheduleRefresh();
+
+    /// Capture hors ecran de la scene, posee sur un fond de controle, et ecrite
+    /// dans le fichier donne (AICE_SHOT=/chemin.png). Sert a regarder le rendu
+    /// (degrade d'ombre, fade) sans avoir les yeux sur l'ecran.
+    Q_INVOKABLE void grabShot(const QString &path);
 
     double frameMs() const { return m_frameMs; }
     double frameMax() const { return m_frameMax; }
@@ -66,6 +77,7 @@ public:
     bool stress() const { return m_stress; }
     bool pump() const { return m_pump; }
     bool hud() const { return m_hud; }
+    bool shadow() const { return m_shadow; }
 
 signals:
     void frameMsChanged();
@@ -76,16 +88,18 @@ private:
     struct Card {
         QRect rect;
         int radius;
+        qreal alpha = 1.0;   // alpha effectif, parents inclus (le fade est porte par la delegate)
     };
 
     void applyRegions();
-    void collect(QQuickItem *item, QQuickItem *sceneRoot, QVector<Card> &out) const;
+    void collect(QQuickItem *item, QQuickItem *sceneRoot, QVector<Card> &out, int &excluded) const;
     static bool isInside(const QQuickItem *item, const QQuickItem *ancestor);
     void persistPosition();
     void onFrameSwapped();
 
     QQuickWindow *m_window = nullptr;
     QQuickItem *m_clip = nullptr;      // viewport a respecter (le ListView)
+    QVector<Card> m_lastCards;         // les cartes du dernier verre (debug/ captures)
     QRegion m_lastRegion;              // pour ne rien reappliquer si identique
     bool m_pending = false;            // refresh deja programme
     bool m_layered = false;            // overlay layer-shell (AICE_LAYER=1)
@@ -93,6 +107,8 @@ private:
     bool m_stress = false;
     bool m_pump = false;
     bool m_hud = true;
+    bool m_shadow = true;
+    int m_excludedShown = -1;              // dernier compte d'exclusions affiche (debug)
     int m_cards = 0;
 
     // Mesure des frames.

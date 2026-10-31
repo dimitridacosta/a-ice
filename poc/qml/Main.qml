@@ -24,7 +24,7 @@ Window {
     readonly property int barRadius: 22
     readonly property int hudRadius: 12
     readonly property int inset: 8          // marge autour des cartes dans la zone
-    readonly property int halo: 4           // halo d'ombre : la region floue = la carte seule
+    readonly property int halo: 12          // place laissee a l'ombre autour de la carte
     readonly property int fadeBand: 90      // hauteur du fade en haut/bas de la zone
     readonly property color userCard: "#5A3478DA"   // rgba(52,120,218,90)
     readonly property color agentCard: "#64222228"  // rgba(34,34,40,100)
@@ -34,7 +34,7 @@ Window {
     readonly property color ink: "#e9eaee"
 
     // Reglages modifies a la volee depuis le badge (mesure du cout GPU).
-    property bool shadowOn: true
+    property bool shadowOn: glass.shadow   // AICE_SHADOW=0 pour mesurer sans ombre
     property bool fadeOn: true
     property bool generating: false
 
@@ -44,19 +44,33 @@ Window {
     color: "transparent"
     flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
 
-    // Ombre de carte : un rectangle plus large, floute par le GPU (MultiEffect),
-    // donc ni bitmap floute a la CPU ni shader manuel a maintenir.
-    component GlassShadow: Rectangle {
-        property int cardRadius: 16
-        color: "#8C000000"
-        radius: cardRadius + 8
-        antialiasing: true
-        layer.enabled: true
-        layer.effect: MultiEffect {
-            blurMax: 26
-            blur: 0.55
-            opacity: 0.5
-        }
+    /*
+     * Ombre de carte : l'effet d'ombre fourni par Qt, pose sur la carte elle-meme.
+     * Qt la construit a partir de l'alpha de la carte (donc de ses coins arrondis)
+     * et laisse automatiquement la place au degrade autour (autoPaddingEnabled).
+     *
+     * C'est ce qui manquait a un rectangle fonce simplement floute : son flou est
+     * rogne aux bords de sa propre texture, donc le degrade n'existe pas et
+     * l'ombre rend en dur, en plus d'etre placee a la main carte par carte.
+     *
+     * Le layer n'est active que si l'ombre est active : le lien « ombre » du badge
+     * mesure ainsi le cout reel (un rendu en deux passes par carte).
+     */
+    component CardShadow: MultiEffect {
+        property real intensity: 0.9      // 0 = pas d'ombre
+        property real softness: 0.45      // epaisseur du degrade (fraction du flou max)
+        property int maxBlur: 40
+        property int drop: 8              // devers vers le bas : la carte flotte
+
+        shadowEnabled: intensity > 0
+        shadowColor: Qt.rgba(0, 0, 0, 1)
+        shadowOpacity: intensity
+        shadowBlur: softness
+        blurMax: maxBlur
+        shadowVerticalOffset: drop
+        shadowHorizontalOffset: 0
+        shadowScale: 1.0
+        autoPaddingEnabled: true
     }
 
     // --- contenu (factice en M1) ---
@@ -117,31 +131,32 @@ Window {
             width: bubblesView.width
             height: card.height
 
-            // Fade par carte (pas de shader, pas de texture hors ecran) : une bulle
-            // qui sort de la zone de conversation s'eteint. La position est mesuree
-            // dans le repere de la vue (mapToItem suit les translations de la liste),
-            // donc le calcul reste juste dans les deux sens de defilement.
-            // Le `tracker` n'est pas decoratif : il force la liaison a se recalculer
-            // quand la vue defile.
-            readonly property real tracker: bubblesView.contentY
-            readonly property point inView: (tracker, mapToItem(bubblesView, 0, 0))
-            readonly property real fromTop: (inView.y + cell.height) / win.fadeBand
-            readonly property real fromBottom: (bubblesView.height - inView.y) / win.fadeBand
+            /*
+             * Fade par carte (pas de shader, pas de texture hors ecran) : une bulle
+             * qui sort de la zone de conversation s'eteint.
+             *
+             * La position d'une bulle se lit dans les chiffres de la vue elle-meme :
+             * y est une coordonnee de contenu (elle est negative dans une vue
+             * inverseee) et le defilement est contentY (negative aussi). Mesure a
+             * l'appui, la position a l'ecran est y - contentY — y compris a 2000
+             * bulles, ou le contenu fait 173 992 pixels.
+             *
+             * Le fade suit ce qui sort de la zone : une bulle entierement dans la
+             * zone reste a 1, et elle s'eteint sur les 90 premiers pixels sortis.
+             * Ce n'est pas une bande fixe posee sur la liste : chaque carte est
+             * evaluee pour elle-meme.
+             */
+            readonly property real zoneTopIn: cell.y - bubblesView.contentY
+            readonly property real outside: Math.max(0.0, bubblesView.y - zoneTopIn)
+                                            + Math.max(0.0, zoneTopIn + cell.height
+                                                       - bubblesView.y - bubblesView.height)
+
             opacity: !win.fadeOn ? 1.0
-                : Math.max(0.0, Math.min(1.0, Math.min(fromTop, fromBottom)))
+                : Math.max(0.0, 1.0 - outside / Math.min(Math.max(cell.height, 1), win.fadeBand))
 
             onYChanged: glass.scheduleRefresh()
             onHeightChanged: glass.scheduleRefresh()
             onVisibleChanged: glass.scheduleRefresh()
-
-            GlassShadow {
-                visible: win.shadowOn
-                cardRadius: card.radius
-                x: card.x - 12
-                y: card.y - 8
-                width: card.width + 24
-                height: card.height + 26
-            }
 
             Rectangle {
                 id: card
@@ -150,6 +165,13 @@ Window {
                 // flou KWin + region de clic.
                 property bool glassCard: true
                 property int glassRadius: win.cardRadius
+
+                // L'ombre porte la carte elle-meme : rien a placer a la main.
+                // (autoPaddingEnabled, dans CardShadow, remplace l'ancien
+                // layer.transparentBorder, parti en Qt 6.11.)
+                layer.enabled: win.shadowOn
+                layer.samples: 4
+                layer.effect: CardShadow {}
 
                 radius: win.cardRadius
                 color: cell.agent ? win.agentCard : win.userCard
@@ -191,26 +213,21 @@ Window {
 
     /* ------------------------------------------------ barre de prompt (grab) */
 
-    GlassShadow {
-        visible: win.shadowOn
-        cardRadius: win.barRadius
-        x: pill.x - 14
-        y: pill.y - 10
-        width: pill.width + 28
-        height: pill.height + 30
-    }
-
     Rectangle {
         id: pill
 
         property bool glassCard: true
         property int glassRadius: win.barRadius
 
+        layer.enabled: win.shadowOn
+        layer.samples: 4
+        layer.effect: CardShadow { drop: 10 }
+
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        anchors.leftMargin: win.inset
-        anchors.rightMargin: win.inset
+        anchors.leftMargin: 20
+        anchors.rightMargin: 20
         anchors.bottomMargin: 18
 
         radius: win.barRadius
@@ -237,7 +254,7 @@ Window {
             onPressed: {
                 lastX = mouse.x
                 lastY = mouse.y
-                nativeMove = glass.grabWindow()
+                nativeMove = glass.startMove()
             }
             onPositionChanged: {
                 if (nativeMove)
@@ -338,26 +355,21 @@ Window {
 
     /* ------------------------------------------------- badge de mesure (HUD) */
 
-    GlassShadow {
-        visible: glass.hud
-        cardRadius: win.hudRadius
-        x: hud.x - 10
-        y: hud.y - 8
-        width: hud.width + 20
-        height: hud.height + 20
-    }
-
     Rectangle {
         id: hud
 
         property bool glassCard: true
         property int glassRadius: win.hudRadius
 
+        layer.enabled: win.shadowOn
+        layer.samples: 4
+        layer.effect: CardShadow { intensity: 0.7; drop: 6 }
+
         visible: glass.hud
         anchors.top: parent.top
         anchors.right: parent.right
-        anchors.rightMargin: win.inset
-        anchors.topMargin: 10
+        anchors.rightMargin: 20
+        anchors.topMargin: 20
 
         radius: win.hudRadius
         color: "#3C222228"
@@ -378,7 +390,6 @@ Window {
                       + " · " + bubbleModel.count + " bulles · " + glass.cards + " cartes"
                 color: win.ink
                 font.pixelSize: 11
-                font.family: "monospace"
             }
 
             Row {
