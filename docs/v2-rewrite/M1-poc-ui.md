@@ -16,14 +16,15 @@ et la barre de prompt qu'on attrape pour déplacer toute la fenêtre.
 Critère du plan : *stress test sans freeze, frame time mesuré et stable*.
 Fenêtre carrée **800 × 800** pour tester le principe.
 
-**Verdict : les trois passent.** Qt Quick tient la promesse ; on peut engager M2.
+**Verdict : les trois passent** (plus l'ombre et le fade, voir plus bas). Qt Quick
+tient la promesse ; on peut engager M2.
 
 ## Le code
 
 ```
 poc/CMakeLists.txt      binaire a-ice-m1, QML embarqué dans la ressource
 poc/main.cpp            QGuiApplication + QQmlComponent (les erreurs QML sont affichées)
-poc/GlassHelper.h/.cpp  le verre : région de flou et de clic, mesure des frames
+poc/GlassHelper.h/.cpp  le verre : région de flou et de clic, mesure des frames, captures
 poc/qml/Main.qml        bulles, barre, fade, ombres, badge de mesures
 ```
 
@@ -44,12 +45,14 @@ property int glassRadius: 16
 
 entre dans la région. `GlassHelper::collect()` parcourt l'arbre, ramène chaque carte
 au repère de la scène (en tenant compte des marges d'ancrage), **intersecte avec le
-viewport** (`setClipItem(bubblesView)` : une bulle sortie de la zone de conversation
-ne doit ni flouter ni capter les clics), construit des `QRegion` arrondis, et pose
-`window->setMask()` + `KWindowEffects::enableBlurBehind()`. Rien n'est reposé si la
-région est identique (anti-clignotement). Le rafraîchissement est fusionné
-(`scheduleRefresh()`, `QTimer::singleShot(0)`), déclenché à chaque `frameSwapped` —
-l'équivalent exact de ce qu'on faisait au repaint en v1.
+viewport** (`setClipItem(bubblesView)` : une bulle sortie de la zone ne doit ni
+flouter ni capter les clics), écarte les cartes que le fade a éteintes (alpha
+effectif mesuré en remontant les parents — rien de peint, donc rien à flouter),
+construit des `QRegion` arrondies, puis pose `window->setMask()` +
+`KWindowEffects::enableBlurBehind()`. Rien n'est reposé si la région est identique
+(anti-clignotement). Le rafraîchissement est fusionné (`scheduleRefresh()`,
+`QTimer::singleShot(0)`), déclenché à chaque `frameSwapped` — l'équivalent exact de
+ce qu'on faisait au repaint en v1.
 
 ## Lancer
 
@@ -66,101 +69,159 @@ cd build/poc && ./a-ice-m1 --size 800
 | `--size 800` | côté de la fenêtre carrée (défaut 800) |
 | `AICE_STRESS=1` | 2 000 bulles factices au lieu de 9 |
 | `AICE_PUMP=1` | redessine en continu : le frame time s'auto-mesure sans interaction |
-| `AICE_HUD=1`/`0` | badge de mesures dans la fenêtre (visibles par défaut) |
+| `AICE_HUD=1/0` | badge de mesures dans la fenêtre (visible par défaut) |
+| `AICE_SHADOW=1/0` | ombres de carte activées ou coupées au démarrage — sert à mesurer ce qu'elles coûtent |
 | `AICE_LAYER=1` | overlay layer-shell (ancre désactivée, couche LayerOverlay) |
-| `AICE_DEBUG=1` | dump de chaque carte de verre (rect + rayon) quand elles changent |
+| `AICE_DEBUG=1` | dump de chaque carte de verre (rect, rayon, **alpha effectif**), et compte des cartes écartées par le fade |
+| `AICE_SHOT=<chemin.png>` | capture la scène rendue et l'écrit dans le fichier ; `AICE_SHOT_QUIT=1` ferme juste après. **C'est l'outil qui a servi à voir les deux bugs** décrits plus bas |
 | `AICE_QML=<chemin>` | charge le QML depuis le disque : itérer sur l'UI sans recompiler |
-| `QT_QPA_PLATFORM=offscreen` | vérification hors écran (aucune fenêtre ne s'affiche) |
+| `QT_QPA_PLATFORM=offscreen` | vérification hors écran (voir la mise en garde sur les effets GPU) |
 
 Le badge affiche `frame … ms · pic … ms · N bulles · M cartes`, plus deux liens qui
-servent à mesurer le coût GPU : **ombre** et **fade** (à couper/remettre à la volée),
-et `fenetre natif` ou `fenetre par deltas` selon que le compositeur a bien voulu le
-`startSystemMove()`.
+mesurent le coût GPU à la volée (**ombre**, **fade**) et `fenetre natif` ou
+`fenetre par deltas` selon que le compositeur a bien voulu le `startSystemMove()`.
+
+### Voir le rendu sans les yeux sur l'écran
+
+`AICE_SHOT=/tmp/x.png` capture la scène (via `QQuickWindow::grabWindow()`), la pose
+sur un fond de contrôle en damier et l'écrit en PNG. Avec `AICE_DEBUG=1`, les cartes
+de verre sont en plus entourées sur l'image : on voit où est le verre, et ce qui est
+peint réellement. C'est comme ça que l'ombre et le fade ont été validés — la
+première version était fausse et **on ne le voyait pas**.
+
+Mise en garde : hors écran, le container n'a pas de GPU, donc le rendu tombe sur le
+RHI logiciel et **les effets (`layer.effect`, `MultiEffect`) ne peignent rien**. Une
+capture `QT_QPA_PLATFORM=offscreen` ne prouve donc jamais un ombre/un flou — pour
+ça il faut une capture sur l'écran (le POC tourne bien sur le vrai Wayland).
 
 ## Mesures
 
 Stress réel sur l'écran Wayland (KDE/Bazzite), 2 000 bulles, redraw continu, 800 × 800 :
 
-```
-frame time moyen 6,02 – 6,16 ms, pic 41 ms, 1 920 frames, cartes dans le verre 11
-```
+| config | frame time | pic | frames | cartes |
+| --- | --- | --- | --- | --- |
+| sans ombre | **6,10 – 6,13 ms** | 35 ms | 1 920 | 10 |
+| avec ombre (défaut) | **6,98 – 7,14 ms** | 30 ms | 1 920 | 10 |
 
-- **Pas de freeze**, pas de dérive : la moyenne reste à ~6 ms du début à la fin
-  (1 920 frames), donc 16 ms/frame largement tenus — le quota du compositeur.
-- **11 cartes de verre avec 2 000 bulles dans le modèle** : c'est la preuve de la
-  virtualisation. Seules les bulles réellement réalisées (visibles ou dans le
-  `cacheBuffer`) entrent dans la région ; le modèle, lui, fait 2 000 lignes.
-- Le pic unique à 41 ms correspond à l'installation de la liste au démarrage
-  (réalisation des delegates + première région), pas à une frame de scroll.
-- Hors écran (`QT_QPA_PLATFORM=offscreen`) : mêmes ordres de grandeur (5,8–6,5 ms).
-- Ombres `MultiEffect` et fade par carte coupés depuis le badge : le frame time
-  baisse nettement, ce qui confirme que le coût est bien du côté GPU/compositeur
-  et non de la logique.
-
-**Empilement vérifié par le dump `AICE_DEBUG=1`** — identique à la v1 :
-
-- cartes agent pleine largeur (`776 @ x=12`), carte user plus petite alignée à
-  droite (`104 @ x=684`), y = 676, 621, 499, 400, 300, 223, 146, 92, 37, barre à
-  730, espacement de 6 px. Les bulles sont bien **ancrées en bas**, les anciennes
-  montent au-dessus.
+- **Pas de freeze**, pas de dérive : la moyenne ne bouge pas du début à la fin, donc
+  le quota du compositeur (16,7 ms) est tenu avec ~1,5 ms de marge — et l'ombre coûte
+  **~0,9 ms/frame**, soit ~6 % du quota. C'est le prix à connaitre pour la suite.
+- **10 cartes de verre pour 2 000 bulles dans le modèle** : preuve de la
+  virtualisation. Seules les bulles réalisées entrent dans la région (le modèle, lui,
+  fait 2 000 lignes). Le pic unique de 30-35 ms correspond à l'installation de la
+  liste (réalisation des délégués + première région), pas au scroll.
+- Le dump `AICE_DEBUG=1` donne l'alpha effectif de chaque carte : à 2 000 bulles, la
+  carte coupée en haut de la zone est à `alpha 0,25` et les cartes entièrement sorties
+  sont écartées du verre.
+- Empilement vérifié à la mesure — identique à la v1 : cartes agent pleine largeur
+  (`760 @ x=20`), carte user plus petite alignée à droite (`104 @ x=676`), barre à
+  `760x52 @ 20,730`, y des bulles 676, 621, 499, 400, 300, 223, 146, 92, 37,
+  espacement de 6 px. Les bulles sont bien **ancrées en bas**, les anciennes montent.
 
 ## Ce qui est acquis
 
-| Ingredient | Comment | Verdict |
+| Ingrédient | Comment | Verdict |
 | --- | --- | --- |
 | Verre par carte | `glassCard` dans l'arbre QML → `QRegion` arrondies + `enableBlurBehind` + `setMask` | ✅ |
-| Barre attrapable | `QWindow::startSystemMove()`, fallback deltas côté QML, position dans `QSettings` `[window]` | ✅ (le natif est-il réellement pris : à confirmer à l'œil) |
-| Bulles virtualisées | `ListView` + `cacheBuffer`, 2 000 lignes, 11 régions | ✅ |
-| Fade haut/bas | opacité par delegate, selon la position dans la zone | ✅ |
+| Barre attrapable | `QWindow::startSystemMove()` (`glass.startMove()`), fallback deltas côté QML, position dans `QSettings` `[window]` | ✅ le natif est-il réellement pris : à confirmer à l'œil |
+| Bulles virtualisées | `ListView` + `cacheBuffer`, 2 000 lignes, 10 régions | ✅ |
+| Fade haut/bas | opacité par carte = fraction de la bulle sortie de la zone | ✅ (mesuré : 1 → 0,25 → écartée du verre) |
+| Ombre progressive | effet d'ombre de `MultiEffect` posé sur la carte | ✅ |
 | Identité visuelle | rayons 16 / 22, teintes v1 (`#5A3478DA` user, `#64222228` agent), encre `#e9eaee` | ✅ |
-| Frame time stable | 6 ms steady, 1 920 frames | ✅ |
+| Frame time stable | 6,1 ms sans ombre, 7,0 ms avec, 1 920 frames | ✅ |
 
-## Ce qui reste à valider **à l'œil** (je ne peux pas le voir d'ici)
+## Les deux corrections du premier jour
 
-À faire dans l'ordre, ça prend deux minutes :
+La première version donnait une fenêtre **sans bulles visibles** et des **ombres en
+dur**. Les deux se voyaient enfin grâce à `AICE_SHOT` :
 
-1. **Le flou a-t-il la tête du verre Plasma** (thème Utterly-Round), y compris les
-   coins arrondis de la région — `enableBlurBehind` suit-il le `QRegion` arrondi ou
-   l'englobe-t-il dans un rectangle ?
-2. **Le drag natif vs fallback** : lire la ligne `fenetre natif / par deltas` du
-   badge. Si « par deltas », `startSystemMove()` n'est pas accepté par KWin dans
-   cette configuration et il faudra l'assumer (le drag devient moins fluide).
+1. **Ombre** : un rectangle sombre plus grand que la carte, flouté par
+   `layer.effect`, est **rogé aux bords de sa propre texture** — donc pas de dégradé,
+   juste une bande nette autour de la carte, posée à la main carte par carte.
+   Corrigé par l'effet d'ombre fourni par Qt, posé sur la carte elle-même
+   (`CardShadow` : `shadowEnabled`, `shadowBlur`, `shadowOpacity`,
+   `autoPaddingEnabled`) : Qt construit l'ombre à partir de l'alpha de la carte (donc
+   de ses coins arrondis) et laisse automatiquement la place au dégradé. Il n'y a
+   plus rien à placer, et le dégradé existe. La place laissée autour des cartes a été
+   portée à 20 px (`inset 8 + halo 12` marges de la barre) pour que l'ombre ne soit
+   pas coupée par le bord de la fenêtre.
+2. **Fade** : la première formule mesurait la position de la bulle *dans le repère de la
+   vue*. Or une vue `BottomToTop` ne donne pas de position locale exploitable : le
+   calcul sortait à 0, toutes les bulles étaient peintes à un alpha < 0,01 — donc
+   invisibles, et **exclues du verre** (elles ne floutaient plus, ne captaient plus
+   les clics). La formule juste se lit dans les chiffres de la vue : `y` est une
+   coordonnée de contenu (négative) et le défilement est `contentY` (négatif aussi) ;
+   mesurément, **position à l'écran = `cell.y - bubblesView.contentY`**, y compris
+   quand le contenu fait 173 992 pixels. Le fade est ensuite la fraction de la bulle
+   sortie de la zone, éteinte sur les 90 premiers pixels sortis.
+
+Effet de bord utile : le C++ calcule maintenant l'alpha effectif de chaque carte
+(produit des `opacity` jusqu'à la scène) et **écarte du verre les cartes que le fade
+a éteintes**. Une bulle éteinte ne doit pas flouter ni capter les clics ; le dump
+`AICE_DEBUG=1` affiche cet alpha et le compte des cartes écartées.
+
+## Ce qui reste à valider **à l'œil**
+
+1. **La tête du flou Plasma** (thème Utterly-Round) : `enableBlurBehind` suit-il les
+   coins arrondis de la `QRegion` ou les englobe-t-il dans un rectangle ?
+2. **Le drag natif vs fallback** : lire `fenetre natif / par deltas` dans le badge.
+   Si « par deltas », `startSystemMove()` n'est pas accepté par KWin ici et il faut
+   l'assumer (le drag devient moins fluide).
 3. **`AICE_LAYER=1`** : overlay sans ancre, au-dessus de tout, sans tâche dans le
-   panel. Le chemin layer-shell est écrit mais n'a pas été testé en conditions réelles.
-4. **Le ressenti du fade** (90 px) et le scroll à 2 000 bulles, au toucher.
+   panel. Le chemin layer-shell est écrit mais n'a pas été essayé en conditions réelles.
+4. **Le ressenti du dégradé d'ombre** (0,9 d'intensité, flou 40 px, dévers 8 px) et
+   du fade (90 px) au toucher, et le scroll à 2 000 bulles.
 5. La persistance de position : relancer et vérifier que la fenêtre se remet où elle
    était (section `[window]` de `~/.config/a-ice/a-ice.conf`).
 
-## Pieges (ne pas les refaire)
+## Pièges (ne pas les refaire)
 
+- **Un flou posé sur un rectangle est un piège** : `layer.effect` ne peut pas déborder
+  de la texture de l'item. Pour une ombre, utiliser l'effet d'ombre de `MultiEffect`
+  sur l'item qui doit l'ombre, avec `autoPaddingEnabled`.
+- **`layer.transparentBorder` n'existe plus en Qt 6.11** (il est remplacé par
+  `autoPaddingEnabled`) : le QML refuse de charger avec
+  `Cannot assign to non-existent property "transparentBorder"`.
+- **RHI logiciel = pas d'effets**. Sur une plateforme sans GPU (offscreen dans le
+  container), tout ce qui passe par `layer.effect`/`MultiEffect` ne peint **rien**,
+  sans erreur. Ne jamais conclure sur une capture hors écran côté rendu.
+- **Le repère local d'une vue `BottomToTop` n'est pas celui de l'écran** : ne pas
+  mesurer un fade en `mapToItem` vers la vue. La formule mesurée : position à l'écran
+  = `y du délégué - contentY`.
+- **Un fade cassé ne se voit pas** si rien ne le mesure : les bulles peintes à un
+  alpha < 0,01 disparaissent sans bruit. Le dump avec l'alpha effectif (et le compte
+  des cartes écartées) l'aurait montré tout de suite.
+- `QQuickWindow` possède déjà son propre `grabWindow()` (qui capture une image) : la
+  méthode de déplacement du POC a été renommée `startMove()` pour ne pas mélanger
+  les deux.
 - **Qt 6.11** : `QQmlComponent::Status` vaut `{Null, Ready, Loading, Error}` ;
   `isCompiling()` / `isCreating()` n'existent plus.
-- **`engine.load()` + `rootObjects().isEmpty()` sort silencieusement** (code 1,
-  rien affiché). D'où `QQmlComponent` + `errorString()` imprimés par `fprintf` :
+- **`engine.load()` + `rootObjects().isEmpty()` sort silencieusement** (code 1, rien
+  affiché). D'où `QQmlComponent` + `errorString()` imprimés par `fprintf` :
   `qInfo`/`console.log` sont niveau debug et **filtrés par défaut** en Qt 6.
 - `qt_add_resources` n'a pas de mot-clé `ALIASES` ici, mais l'alias est déjà
   `PREFIX + chemin relatif` : la ressource est `qrc:/poc/qml/Main.qml`.
   `QFile::exists("qrc:/…")` est faux (il écrit `":/…"`).
 - **Un `header: Item {}` dimensionné depuis `contentHeight` casse la virtualisation** :
-  plus aucun delegate réalisé, et la région de verre ne compte plus qu'une carte.
-  C'est ce qui a produit le bug initial. On ancre en bas autrement :
-  `verticalLayoutDirection: ListView.BottomToTop` + modèle **du plus récent au plus
-  vieux** (`insert(0, …)`). « Être à la fin » devient `contentY >= contentYMax - 4`
-  (une vue inversée donne `contentY = contentYMax` quand la plus récente est visible).
-- `width: view ? view.width : 0` dans un delegate rend une largeur 0 (et donc des
+  plus aucun délégué réalisé, et la région de verre ne compte plus qu'une carte.
+  On ancre en bas autrement : `verticalLayoutDirection: ListView.BottomToTop` +
+  modèle **du plus récent au plus vieux** (`insert(0, …)`). « Être à la fin » devient
+  `contentY >= contentYMax - 4`.
+- `width: view ? view.width : 0` dans un délégué rend une largeur 0 (et donc des
   largeurs de carte **négatives** dans le dump). Écrire `width: bubblesView.width`.
 - `native` est un **identifiant réservé** en QML.
-- Le `TextEdit` du noyau QtQuick n'a **ni `accepted`, ni `placeholderText`/`placeholderColor`** :
-  `Keys.onReturnPressed` + un `Text` frère pour le texte fantôme.
+- Le `TextEdit` du noyau QtQuick n'a **ni `accepted`, ni `placeholderText`/
+  `placeholderColor`** : `Keys.onReturnPressed` + un `Text` frère pour le texte fantôme.
 - Une propriété ne peut pas avoir deux gestionnaires (`Property value set multiple times`).
 - Les géométries transitoires pendant un layout peuvent remonter des positions
-  négatives dans le dump des cartes : c'est sans effet sur le résultat.
+  négatives dans le dump (le badge HUD à `-233,20`) : c'est sans effet sur le résultat.
 
 ## Ce que M2 garde de M1
 
 À basculer tel quel dans la vraie GUI : `GlassHelper` (presque rien à changer, sinon
 les cartes réelles), la liste ancrée en bas + modèle le plus récent en tête, le fade
-par carte, le drag natif avec fallback. À ne **pas** garder : `seedFake()`/`replies`
-(bouchons de démo), le badge de mesures (outil de mesure, pas une feature), et
-`AICE_*` côté moteur. Le point d'entrée du vrai travail : brancher le client du hub
-zcode-acp à la place de `send()`/`streamTimer`.
+par carte (fraction sortie de la zone), l'ombre par effet Qt, le drag natif avec
+fallback, et l'outil de capture `AICE_SHOT`. À ne **pas** garder : `seedFake()` et
+`replies` (bouchons de démo), le badge de mesures (outil de mesure, pas une feature),
+et les variables `AICE_*` côté moteur. Le point d'entrée du vrai travail : brancher
+le client du hub zcode-acp à la place de `send()` / `streamTimer`.
