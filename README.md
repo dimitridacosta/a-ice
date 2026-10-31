@@ -181,6 +181,25 @@ $EDITOR ~/.config/a-ice/SOUL.md
 - Qt6 + KF6::WindowSystem (blur KWin via le protocole `ext_background_effect_v1`)
 - HTTP client natif Qt pour les requêtes au provider OpenAI-compatible
 
+## Refonte v2 (en cours, branche `v2`)
+
+Le plan de la refonte — verre en **Qt Quick**, GUI cliente du hub zcode-acp, moteur
+interchangeable — est dans [docs/v2-rewrite/PLAN.md](docs/v2-rewrite/PLAN.md).
+
+M1 est déjà testable sans toucher au moteur ni à l'UI actuelle : un binaire séparé,
+`a-ice-m1`, qui rejoue l'identité visuelle d'a-ice (bulles flottantes séparées dans
+leur morceau de verre, barre de prompt attrapable qui déplace toute la fenêtre) sur
+une fenêtre de 800 × 800.
+
+```bash
+# dans dev-aice, après un make classique
+cd build/poc && AICE_HUD=1 ./a-ice-m1 --size 800        # bulles simulées, mesures affichées
+AICE_STRESS=1 AICE_PUMP=1 ./a-ice-m1 --size 800          # 2 000 bulles, frame time
+```
+
+Comment l'exécuter, ce qu'il mesure, et ce qu'on en a tiré :
+[docs/v2-rewrite/M1-poc-ui.md](docs/v2-rewrite/M1-poc-ui.md).
+
 ## Raccourcis
 
 - `Entrée` : envoyer
