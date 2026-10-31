@@ -1,15 +1,15 @@
 # a-ice 2.0 — POC UI Qt Quick (refonte, hors Qt Widgets)
 find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2)
 
-set(CMAKE_AUTORCC ON)
+add_executable(a-ice-poc
+    main.cpp
+)
 
 qt_add_resources(a-ice-poc "poc"
     PREFIX "/poc"
-    FILES qml/Main.qml
-)
-
-add_executable(a-ice-poc
-    main.cpp
+    FILES
+        qml/Main.qml
+        shaders/fade.frag.qsb
 )
 
 target_link_libraries(a-ice-poc

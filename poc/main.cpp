@@ -19,6 +19,7 @@ class PocHelper : public QObject
     Q_PROPERTY(double frameMs READ frameMs NOTIFY frameMsChanged)
     Q_PROPERTY(int windowWidth READ windowWidth CONSTANT)
     Q_PROPERTY(int windowHeight READ windowHeight CONSTANT)
+    Q_PROPERTY(bool stress READ stress CONSTANT)
 
 public:
     explicit PocHelper(int heightOverride = 0, QObject *parent = nullptr)
@@ -29,6 +30,7 @@ public:
         m_y = s.value(QStringLiteral("window/y"), -1).toInt();
         m_windowWidth = s.value(QStringLiteral("window/width"), 900).toInt();
         m_windowHeight = s.value(QStringLiteral("window/height"), 0).toInt(); // 0 = plein écran
+        m_stress = qEnvironmentVariable("AICE_STRESS") == "1";
         if (heightOverride > 0)
             m_windowHeight = heightOverride;
     }
@@ -36,6 +38,7 @@ public:
     double frameMs() const { return m_frameMs; }
     int windowWidth() const { return m_windowWidth; }
     int windowHeight() const { return m_windowHeight; }
+    bool stress() const { return m_stress; }
 
     // Appelé depuis QML une fois la fenêtre créée (Component.onCompleted).
     Q_INVOKABLE void attach(QQuickWindow *window)
@@ -114,13 +117,10 @@ private:
             if (++m_count >= 180) {
                 m_frameMs = m_sum / m_count;
                 emit frameMsChanged();
-                if (++m_logCycles == 600) {
-                    qInfo("frame time: avg %.2f ms, min %.2f ms, max %.2f ms",
-                          m_frameMs,
-                          m_min,
-                          m_max);
-                    m_logCycles = 0;
-                }
+                qInfo("frame time: avg %.2f ms, min %.2f ms, max %.2f ms",
+                      m_frameMs,
+                      m_min,
+                      m_max);
                 m_count = 0;
                 m_lastFrameSwap = now;
                 return;
@@ -130,6 +130,7 @@ private:
     }
 
     bool m_attached = false;
+    bool m_stress = false;
     int m_x = -1;
     int m_y = -1;
     int m_windowWidth = 900;
@@ -139,13 +140,20 @@ private:
     double m_max = 0.0;
     double m_sum = 0.0;
     int m_count = 0;
-    int m_logCycles = 0;
     qint64 m_lastFrameSwap = 0;
 };
+
+// Les messages de log Qt sont invisibles dans cette box : tout via fprintf(stderr).
+static void pocLogHandler(QtMsgType type, const QMessageLogContext &, const QString &msg)
+{
+    fprintf(stderr, "qt: %s\n", qPrintable(msg));
+    fflush(stderr);
+}
 
 int main(int argc, char **argv)
 {
     QGuiApplication app(argc, argv);
+    qInstallMessageHandler(pocLogHandler);
     QGuiApplication::setOrganizationName(QStringLiteral("a-ice"));
     QGuiApplication::setApplicationName(QStringLiteral("poc-v2"));
 
@@ -161,10 +169,15 @@ int main(int argc, char **argv)
     parser.process(app);
 
     PocHelper helper(parser.value(heightOpt).toInt());
+    fprintf(stderr, "poc: startup platform=%s\n", qPrintable(QGuiApplication::platformName()));
+    fflush(stderr);
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("helper"), &helper);
-    engine.load(QUrl(QStringLiteral("qrc:/poc/qml/Main.qml")));
+    const QUrl mainUrl(QStringLiteral("qrc:/poc/qml/Main.qml"));
+    engine.load(mainUrl);
+    fprintf(stderr, "poc: qml loaded, %d root objects\n", int(engine.rootObjects().size()));
+    fflush(stderr);
     if (engine.rootObjects().isEmpty())
         return 1;
 

@@ -49,13 +49,23 @@ Window {
                     clip: true
                     reuseItems: true
                     cacheBuffer: 600 // px de prérendu au-delà du viewport
-                    verticalScrollBarPolicy: ScrollBar.AsNeeded
                     flickDeceleration: 6000
                     maximumFlickVelocity: 8000
 
                     ScrollBar.vertical: ScrollBar {
                         width: 8
                         policy: ScrollBar.AsNeeded
+                    }
+
+                    // Stress test continu (AICE_STRESS=1) pour mesurer le frame time.
+                    Timer {
+                        interval: 8
+                        running: helper.stress && chatList.contentHeight > chatList.height
+                        repeat: true
+                        onTriggered: {
+                            let end = chatList.contentHeight - chatList.height
+                            chatList.contentY = (chatList.contentY + 14) % Math.max(end, 1)
+                        }
                     }
 
                     // Génération des 2000 bulles de test.
@@ -116,7 +126,7 @@ Window {
                 ShaderEffect {
                     id: fadeEffect
                     anchors.fill: parent
-                    property var source: ShaderEffectSource {
+                    property ShaderEffectSource source: ShaderEffectSource {
                         sourceItem: chatList
                         live: true
                         recursive: false
@@ -124,22 +134,9 @@ Window {
                     }
                     property real fadeTop: 60 // px
                     property real fadeBottom: 60
-                    readonly property real pxPerUnit: Math.max(1, chatZone.height)
+                    property real pxPerUnit: Math.max(1, chatZone.height)
 
-                    fragmentShader: "
-                        uniform sampler2D source;
-                        uniform lowp float qt_Opacity;
-                        varying highp vec2 qt_UV;
-                        uniform lowp float fadeTop;
-                        uniform lowp float fadeBottom;
-                        uniform highp float pxPerUnit;
-                        void main() {
-                            vec4 c = texture2D(source, qt_UV);
-                            float fade = smoothstep(0.0, fadeTop / pxPerUnit, qt_UV.y)
-                                       * smoothstep(0.0, fadeBottom / pxPerUnit, 1.0 - qt_UV.y);
-                            gl_FragColor = c * qt_Opacity * clamp(fade, 0.0, 1.0);
-                        }
-                    "
+                    fragmentShader: "qrc:/poc/shaders/fade.frag.qsb"
                 }
             }
 
@@ -201,8 +198,8 @@ Window {
                                 color: Qt.rgba(1, 1, 1, 0.35)
                                 font: focusRing.font
                             }
-                            onAccepted: {
-                                if (text.length > 0) {
+                            Keys.onReturnPressed: (event) => {
+                                if (event.modifiers === Qt.NoModifier && text.length > 0) {
                                     chatModel.append({ text: text, mine: true })
                                     chatModel.append({
                                         text: "(POC — le hub ACP branchera le vrai moteur)",
