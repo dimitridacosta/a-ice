@@ -1,0 +1,528 @@
+import QtQuick
+import QtQuick.Window
+import QtQuick.Effects
+
+/*
+ * a-ice 2.0 — M1 : le corps en Qt Quick, version testable.
+ *
+ * On reproduit fidelement l'identite visuelle d'a-ice telle qu'on la connait :
+ *   - aucune fenetre visible : seul le verre existe (carte par carte),
+ *   - des bulles flottees separees (carte agent pleine largeur, carte user
+ *     plus petite alignee a droite), chacune avec sa zone de flou propre,
+ *   - une barre de prompt en pilule en bas, ATTRAPABLE : on la saisit et c'est
+ *     toute la fenetre qui bouge.
+ *
+ * Tout ce qui est mesure ici (flou, deplacement, liste virtualisee, fade) est
+ * ce qu'on validait avant d'engager la refonte : voir docs/v2-rewrite/PLAN.md.
+ * Le moteur agentique n'est pas encore branche : les reponses sont simulees.
+ */
+Window {
+    id: win
+
+    // --- reglages du verre (teintes et rayons repris de la v1) ---
+    readonly property int cardRadius: 16
+    readonly property int barRadius: 22
+    readonly property int hudRadius: 12
+    readonly property int inset: 8          // marge autour des cartes dans la zone
+    readonly property int halo: 4           // halo d'ombre : la region floue = la carte seule
+    readonly property int fadeBand: 90      // hauteur du fade en haut/bas de la zone
+    readonly property color userCard: "#5A3478DA"   // rgba(52,120,218,90)
+    readonly property color agentCard: "#64222228"  // rgba(34,34,40,100)
+    readonly property color cardBorder: "#24FFFFFF" // rgba(255,255,255,36)
+    readonly property color barFill: "#6E222228"    // rgba(34,34,40,110)
+    readonly property color barBorder: "#28FFFFFF"  // rgba(255,255,255,40)
+    readonly property color ink: "#e9eaee"
+
+    // Reglages modifies a la volee depuis le badge (mesure du cout GPU).
+    property bool shadowOn: true
+    property bool fadeOn: true
+    property bool generating: false
+
+    width: pocSize
+    height: pocSize
+    visible: false
+    color: "transparent"
+    flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+
+    // Ombre de carte : un rectangle plus large, floute par le GPU (MultiEffect),
+    // donc ni bitmap floute a la CPU ni shader manuel a maintenir.
+    component GlassShadow: Rectangle {
+        property int cardRadius: 16
+        color: "#8C000000"
+        radius: cardRadius + 8
+        antialiasing: true
+        layer.enabled: true
+        layer.effect: MultiEffect {
+            blurMax: 26
+            blur: 0.55
+            opacity: 0.5
+        }
+    }
+
+    // --- contenu (factice en M1) ---
+    ListModel { id: bubbleModel }
+
+    property var streamWords: []
+    property int streamWord: 0
+    property int streamRow: -1
+
+    /* ---------------------------------------------------------------- bulles */
+
+    ListView {
+        id: bubblesView
+        anchors.top: parent.top
+        anchors.bottom: pill.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: win.inset
+        anchors.rightMargin: win.inset
+        anchors.bottomMargin: 6
+
+        model: bubbleModel
+        spacing: 6
+        cacheBuffer: 600
+        boundsBehavior: Flick.StopAtBounds
+        focus: false
+
+        // Le modele est range du plus recent au plus vieux : index 0 = la bulle la
+        // plus recente, calee en bas de la zone juste au-dessus de la barre, les
+        // anciennes s'empilant au-dessus. C'est la seule facon d'ancrer les bulles
+        // en bas sans tricher : un espaceur vide place au-dessus de la liste a
+        // bloque la realisation des bulles par la vue, donc leur presence dans
+        // le verre.
+        verticalLayoutDirection: ListView.BottomToTop
+
+        // Cote « plus recent » d'une vue inverseee = contentYMax (verifie : la vue
+        // donne contentY = -hauteur de la zone quand la plus recente est visible).
+        readonly property bool atNewest: contentY >= contentYMax - 4
+        function followNewest() {
+            if (atNewest)
+                contentY = contentYMax;
+        }
+
+        onContentHeightChanged: glass.scheduleRefresh()
+        onHeightChanged: glass.scheduleRefresh()
+        onContentYChanged: glass.scheduleRefresh()
+        onWidthChanged: glass.scheduleRefresh()
+
+        delegate: Item {
+            id: cell
+
+            required property int index
+            required property string role
+            required property string text
+
+            readonly property bool agent: role === "agent"
+
+            width: bubblesView.width
+            height: card.height
+
+            // Fade par carte (pas de shader, pas de texture hors ecran) : une bulle
+            // qui sort de la zone de conversation s'eteint. La position est mesuree
+            // dans le repere de la vue (mapToItem suit les translations de la liste),
+            // donc le calcul reste juste dans les deux sens de defilement.
+            // Le `tracker` n'est pas decoratif : il force la liaison a se recalculer
+            // quand la vue defile.
+            readonly property real tracker: bubblesView.contentY
+            readonly property point inView: (tracker, mapToItem(bubblesView, 0, 0))
+            readonly property real fromTop: (inView.y + cell.height) / win.fadeBand
+            readonly property real fromBottom: (bubblesView.height - inView.y) / win.fadeBand
+            opacity: !win.fadeOn ? 1.0
+                : Math.max(0.0, Math.min(1.0, Math.min(fromTop, fromBottom)))
+
+            onYChanged: glass.scheduleRefresh()
+            onHeightChanged: glass.scheduleRefresh()
+            onVisibleChanged: glass.scheduleRefresh()
+
+            GlassShadow {
+                visible: win.shadowOn
+                cardRadius: card.radius
+                x: card.x - 12
+                y: card.y - 8
+                width: card.width + 24
+                height: card.height + 26
+            }
+
+            Rectangle {
+                id: card
+
+                // C'est cette carte (et pas la fenetre) qui definit le verre :
+                // flou KWin + region de clic.
+                property bool glassCard: true
+                property int glassRadius: win.cardRadius
+
+                radius: win.cardRadius
+                color: cell.agent ? win.agentCard : win.userCard
+                border.color: win.cardBorder
+                border.width: 1
+
+                // Carte agent : pleine largeur. Carte user : épouse son texte.
+                width: cell.agent ? (cell.width - 2 * win.halo)
+                                  : Math.min(cell.width - 2 * win.halo, natural.width + 34)
+                height: body.implicitHeight + 26
+                x: cell.agent ? win.halo : (cell.width - win.halo - width)
+
+                Text {
+                    id: body
+                    x: 16
+                    y: 13
+                    width: parent.width - 32
+                    text: cell.text
+                    color: win.ink
+                    font.pixelSize: 13
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    lineHeight: 1.25
+                }
+
+                // Deuxieme passe de mesure : la largeur naturelle du texte, pour
+                // que la carte user colle a son contenu (comme la bulle v1).
+                Text {
+                    id: natural
+                    visible: false
+                    text: cell.text
+                    color: win.ink
+                    font.pixelSize: 13
+                    textFormat: Text.PlainText
+                }
+            }
+        }
+    }
+
+    /* ------------------------------------------------ barre de prompt (grab) */
+
+    GlassShadow {
+        visible: win.shadowOn
+        cardRadius: win.barRadius
+        x: pill.x - 14
+        y: pill.y - 10
+        width: pill.width + 28
+        height: pill.height + 30
+    }
+
+    Rectangle {
+        id: pill
+
+        property bool glassCard: true
+        property int glassRadius: win.barRadius
+
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: win.inset
+        anchors.rightMargin: win.inset
+        anchors.bottomMargin: 18
+
+        radius: win.barRadius
+        color: win.barFill
+        border.color: win.barBorder
+        border.width: 1
+        height: Math.max(52, promptArea.implicitHeight + 24)
+
+        onYChanged: glass.scheduleRefresh()
+        onHeightChanged: glass.scheduleRefresh()
+
+        // Saisie de la fenetre : le geste natif du composeur si il le sait faire,
+        // sinon deplacement par deltas successifs (fallback composeurs prudents).
+        MouseArea {
+            id: pillDrag
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton
+            cursorShape: Qt.SizeAllCursor
+
+            property bool nativeMove: false
+            property real lastX: 0
+            property real lastY: 0
+
+            onPressed: {
+                lastX = mouse.x
+                lastY = mouse.y
+                nativeMove = glass.grabWindow()
+            }
+            onPositionChanged: {
+                if (nativeMove)
+                    return;
+                win.setX(win.x + (mouse.x - lastX))
+                win.setY(win.y + (mouse.y - lastY))
+                lastX = mouse.x
+                lastY = mouse.y
+            }
+            onReleased: nativeMove = false
+        }
+
+        Item {
+            id: pillRow
+            anchors.fill: parent
+            anchors.leftMargin: 12
+            anchors.rightMargin: 10
+            anchors.topMargin: 8
+            anchors.bottomMargin: 8
+
+            // Poignee visible : ce qui se voit se saisit.
+            Item {
+                id: grip
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: 18
+                Text {
+                    anchors.centerIn: parent
+                    text: "\u2806"
+                    color: "#70e9eaee"
+                    font.pixelSize: 15
+                }
+            }
+
+            Rectangle {
+                id: sendBtn
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: 34
+                height: 34
+                radius: 17
+                color: win.generating ? "#D2DA4453" : "#C83478DA"
+                Text {
+                    anchors.centerIn: parent
+                    text: win.generating ? "\u25a0" : "\u2191"
+                    color: "#ffffff"
+                    font.pixelSize: 16
+                    font.bold: true
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: win.generating ? win.stopStream() : win.send()
+                }
+            }
+
+            TextEdit {
+                id: promptArea
+                anchors.left: grip.right
+                anchors.right: sendBtn.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: ""
+                readonly property string hint: "Ask A-Ice\u2026"
+                color: "#f0f1f3"
+                font.pixelSize: 14
+                wrapMode: TextEdit.Wrap
+                // TextEdit (Qt Quick de base) n'a pas de signal accepted :
+                // l'entrée est traitee a la main, et shift+entrée garde son
+                // comportement (saut de ligne dans le prompt).
+                Keys.onReturnPressed: (event) => {
+                    if (event.modifiers & Qt.ShiftModifier)
+                        return;
+                    win.send();
+                    event.accepted = true;
+                }
+                Keys.onEscapePressed: Qt.quit()
+                Keys.onPressed: (event) => {
+                    if (event.key === Qt.Key_Q && (event.modifiers & Qt.ControlModifier)) {
+                        Qt.quit();
+                        event.accepted = true;
+                    }
+                }
+            }
+
+            // Le TextEdit de Qt Quick n'a pas de placeholder : on le dessine
+            // nous-memes pour garder le ton du verre (comme en v1).
+            Text {
+                anchors.fill: promptArea
+                visible: !promptArea.text.length
+                text: promptArea.hint
+                color: "#70e9eaee"
+                font.pixelSize: 14
+                wrapMode: Text.WordWrap
+            }
+        }
+    }
+
+    /* ------------------------------------------------- badge de mesure (HUD) */
+
+    GlassShadow {
+        visible: glass.hud
+        cardRadius: win.hudRadius
+        x: hud.x - 10
+        y: hud.y - 8
+        width: hud.width + 20
+        height: hud.height + 20
+    }
+
+    Rectangle {
+        id: hud
+
+        property bool glassCard: true
+        property int glassRadius: win.hudRadius
+
+        visible: glass.hud
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.rightMargin: win.inset
+        anchors.topMargin: 10
+
+        radius: win.hudRadius
+        color: "#3C222228"
+        border.color: "#1AFFFFFF"
+        border.width: 1
+        width: hudCol.implicitWidth + 20
+        height: hudCol.implicitHeight + 14
+
+        Column {
+            id: hudCol
+            x: 10
+            y: 7
+            spacing: 3
+
+            Text {
+                text: (glass.frames > 1 ? "frame " + glass.frameMs.toFixed(2) + " ms · pic "
+                                        + glass.frameMax.toFixed(2) + " ms" : "frame ms : ...")
+                      + " · " + bubbleModel.count + " bulles · " + glass.cards + " cartes"
+                color: win.ink
+                font.pixelSize: 11
+                font.family: "monospace"
+            }
+
+            Row {
+                spacing: 10
+
+                Text {
+                    text: "ombre " + (win.shadowOn ? "o" : "non")
+                    color: win.shadowOn ? "#CC" + win.ink.toString().slice(1) : "#59e9eaee"
+                    font.pixelSize: 11
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: win.shadowOn = !win.shadowOn
+                    }
+                }
+                Text {
+                    text: "fade " + (win.fadeOn ? "o" : "non")
+                    color: win.fadeOn ? "#CC" + win.ink.toString().slice(1) : "#59e9eaee"
+                    font.pixelSize: 11
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: win.fadeOn = !win.fadeOn
+                    }
+                }
+                Text {
+                    text: "fenetre " + (glass.moveNative ? "natif" : "par deltas")
+                    color: "#80e9eaee"
+                    font.pixelSize: 11
+                }
+            }
+        }
+    }
+
+    /* ------------------------------------------------------------- demarrage */
+
+    function seedFake(count) {
+        const agentLines = [
+            "Le flou est pose carte par carte, la fenetre reste translucide.",
+            "Attrape la barre en bas : c'est toute la fenetre qui bouge.",
+            "Une bulle sortie de la zone ne floute plus et ne capte plus les clics.",
+            "La liste est virtualisee : seules les bulles affichees existent.",
+            "Le fade se fait par carte, en haut et en bas de la zone."
+        ];
+        const userLines = [
+            "On teste le principe.",
+            "800 x 800, comme convenu.",
+            "Deplace la barre, stp.",
+            "Et le scroll ?"
+        ];
+        for (let i = 0; i < count; ++i) {
+            const agent = (i % 2) === 0;
+            const bank = agent ? agentLines : userLines;
+            let text = bank[i % bank.length];
+            // Quelques bulles volontairement longues : wrap, hauteur variable, fade.
+            const repeat = (i % 7) + 1;
+            for (let k = 1; k < repeat; ++k)
+                text += " " + agentLines[(i + k) % agentLines.length];
+            // insert(0) : le modele est du plus recent au plus vieux.
+            bubbleModel.insert(0, { role: agent ? "agent" : "user", text: text });
+        }
+    }
+
+    readonly property var replies: [
+        "Voici une reponse simulee, chunk par chunk, pour voir la carte grandir et la region de verre la suivre frame par frame.",
+        "Le texte arrive mot par mot : c'est le meme chemin que le vrai streaming, sans le moteur.",
+        "Bulle user a droite, bulle agent pleine largeur, et la barre qui suit en bas."
+    ];
+
+    function send() {
+        const text = promptArea.text.trim();
+        if (!text.length)
+            return;
+        promptArea.text = "";
+
+        // Du plus recent au plus vieux : la bulle user d'abord, puis la reponse
+        // agent par-dessus, donc la reponse se cale tout contre la barre.
+        bubbleModel.insert(0, { role: "user", text: text });
+        bubblesView.followNewest();
+
+        streamWords = replies[bubbleModel.count % replies.length].split(" ");
+        streamWord = 0;
+        streamRow = 0;
+        bubbleModel.insert(0, { role: "agent", text: "" });
+        generating = true;
+        streamTimer.start();
+    }
+
+    function stopStream() {
+        streamTimer.stop();
+        generating = false;
+        streamWord = 0;
+        streamRow = -1;
+    }
+
+    Timer {
+        id: streamTimer
+        interval: 35
+        repeat: true
+        onTriggered: {
+            if (win.streamRow < 0 || win.streamWord >= win.streamWords.length) {
+                stop();
+                win.generating = false;
+                win.streamRow = -1;
+                return;
+            }
+            const word = win.streamWords[win.streamWord++];
+            const current = bubbleModel.get(win.streamRow).text;
+            bubbleModel.setProperty(win.streamRow, "text",
+                                    current.length ? current + " " + word : word);
+            bubblesView.followNewest();
+        }
+    }
+
+    // Bourrage d'affichage (AICE_PUMP=1) : redessine en continu, pour que le
+    // frame time soit mesurable sans avoir a scroller a la main.
+    Timer {
+        id: pumpTimer
+        running: glass.pump
+        interval: 0
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: win.requestUpdate()
+    }
+
+    // Reglage une fois la liste installee : les bulles viennent d'etre realisees,
+    // on se cale sur la plus recente et on repose le verre.
+    Timer {
+        id: settleTimer
+        interval: 120
+        onTriggered: {
+            bubblesView.followNewest()
+            glass.scheduleRefresh()
+        }
+    }
+
+    Component.onCompleted: {
+        // Overlay, flou, mesure des frames : le verre est C++ (KWin + QRHI).
+        glass.attach(win);
+        // Les bulles poussees hors de la zone de conversation sont exclues du verre.
+        glass.setClipItem(bubblesView)
+        seedFake(glass.stress ? 2000 : 9);
+        promptArea.forceActiveFocus();
+        win.visible = true;
+        settleTimer.start();
+    }
+}

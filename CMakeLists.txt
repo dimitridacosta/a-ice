@@ -96,3 +96,12 @@ add_executable(test_voicestream
     src/voice/VoiceStream.cpp
 )
 target_link_libraries(test_voicestream PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+
+# --- POC v2 / M1 : le corps en Qt Quick -------------------------------- ------
+# Binaire separe (a-ice-m1) : il ne touche ni au moteur ni a l'UI v1. Il sert a
+# verifier que Qt Quick tient la promesse (flou KWin par carte, barre attrapable,
+# bulles virtualisees) avant d'engager la refonte. Cf. docs/v2-rewrite/PLAN.md.
+option(AICE_BUILD_POC "Construire le POC UI de la refonte v2 (M1)" ON)
+if(AICE_BUILD_POC)
+    add_subdirectory(poc)
+endif()
