@@ -89,6 +89,10 @@ de verre sont en plus entourées sur l'image : on voit où est le verre, et ce q
 peint réellement. C'est comme ça que l'ombre et le fade ont été validés — la
 première version était fausse et **on ne le voyait pas**.
 
+Les captures servent à vérifier, elles ne sont **pas versionnées** (elles sont
+jetées avant chaque commit). Le dossier de travail est `poc/shots/`, libre de
+suppression.
+
 Mise en garde : hors écran, le container n'a pas de GPU, donc le rendu tombe sur le
 RHI logiciel et **les effets (`layer.effect`, `MultiEffect`) ne peignent rien**. Une
 capture `QT_QPA_PLATFORM=offscreen` ne prouve donc jamais un ombre/un flou — pour
@@ -99,13 +103,14 @@ capture `QT_QPA_PLATFORM=offscreen` ne prouve donc jamais un ombre/un flou — p
 Stress réel sur l'écran Wayland (KDE/Bazzite), 2 000 bulles, redraw continu, 800 × 800 :
 
 | config | frame time | pic | frames | cartes |
-| --- | --- | --- | --- | --- |
-| sans ombre | **6,10 – 6,13 ms** | 35 ms | 1 920 | 10 |
-| avec ombre (défaut) | **6,98 – 7,14 ms** | 30 ms | 1 920 | 10 |
+| --- | --- | --- | --- |
+| sans ombre (`AICE_SHADOW=0`) | **6,10 ms** | 24 ms | 3 600 | 10 |
+| avec ombre bleue (défaut) | **6,69 ms** | 31 ms | 3 840 | 10 |
 
 - **Pas de freeze**, pas de dérive : la moyenne ne bouge pas du début à la fin, donc
-  le quota du compositeur (16,7 ms) est tenu avec ~1,5 ms de marge — et l'ombre coûte
-  **~0,9 ms/frame**, soit ~6 % du quota. C'est le prix à connaitre pour la suite.
+  le quota du compositeur (16,7 ms) est tenu avec ~10 ms de marge — et l'ombre coûte
+  **~0,6 ms/frame**, soit ~3,5 % du quota (mesurée texte hors du layer, voir plus
+  bas). C'est le prix à connaitre pour la suite.
 - **10 cartes de verre pour 2 000 bulles dans le modèle** : preuve de la
   virtualisation. Seules les bulles réalisées entrent dans la région (le modèle, lui,
   fait 2 000 lignes). Le pic unique de 30-35 ms correspond à l'installation de la
@@ -126,9 +131,10 @@ Stress réel sur l'écran Wayland (KDE/Bazzite), 2 000 bulles, redraw continu, 8
 | Barre attrapable | `QWindow::startSystemMove()` (`glass.startMove()`), fallback deltas côté QML, position dans `QSettings` `[window]` | ✅ le natif est-il réellement pris : à confirmer à l'œil |
 | Bulles virtualisées | `ListView` + `cacheBuffer`, 2 000 lignes, 10 régions | ✅ |
 | Fade haut/bas | opacité par carte = fraction de la bulle sortie de la zone | ✅ (mesuré : 1 → 0,25 → écartée du verre) |
-| Ombre progressive | effet d'ombre de `MultiEffect` posé sur la carte | ✅ |
+| Ombre progressive | effet d'ombre de `MultiEffect` posé sur la **matière** de la carte, teinte bleue | ✅ |
+| Pas d'ombre derrière les textes | le layer ne contient que le fond : `cardFill`, `pillFill`, `hudFill` | ✅ |
 | Identité visuelle | rayons 16 / 22, teintes v1 (`#5A3478DA` user, `#64222228` agent), encre `#e9eaee` | ✅ |
-| Frame time stable | 6,1 ms sans ombre, 7,0 ms avec, 1 920 frames | ✅ |
+| Frame time stable | 6,1 ms sans ombre, 6,7 ms avec, 3 600-3 840 frames | ✅ |
 
 ## Les deux corrections du premier jour
 
@@ -160,6 +166,25 @@ Effet de bord utile : le C++ calcule maintenant l'alpha effectif de chaque carte
 a éteintes**. Une bulle éteinte ne doit pas flouter ni capter les clics ; le dump
 `AICE_DEBUG=1` affiche cet alpha et le compte des cartes écartées.
 
+## L'ombre : bleue, et pas derriere les textes
+
+L'ombre est réglée à l'œil sur capture (`CardShadow`) :
+
+| Reglage | Valeur | Pourquoi |
+| --- | --- | --- |
+| `tint` | `Qt.rgba(0.07, 0.24, 0.62, 1.0)` | un **bleu profond**, pas un bleu éclairé : l'ombre se voit aussi a travers la carte translucide, un bleu trop lumineux colore toute la fenetre |
+| `intensity` | 0,8 | assez presente sans densiter le fond |
+| `softness` | 0,38 | 38 % du flou max : un halo court, pas une nappe |
+| `maxBlur` | 30 px | idem — un halo large a été essayé (`40`) et rejeté |
+| `drop` | 7 px (10 pour la barre, 6 pour le badge) | la carte flotte |
+
+Et surtout : **une ombre est calculée à partir de ce que contient le layer**. Les
+cartes sont donc des conteneurs (`Item`, qui porte `glassCard` et le rayon de verre)
+dont l'enfant de fond (`cardFill`, `pillFill`, `hudFill`) porte seul
+`layer.effect: CardShadow {}`. Le texte — `body`, le texte saisi, le badge — reste
+**hors du layer**, donc il n'a pas d'ombre. Avant cette séparation, chaque glyphe
+heritait de sa propre ombre : un halo sombre sous les lettres.
+
 ## Ce qui reste à valider **à l'œil**
 
 1. **La tête du flou Plasma** (thème Utterly-Round) : `enableBlurBehind` suit-il les
@@ -169,8 +194,10 @@ a éteintes**. Une bulle éteinte ne doit pas flouter ni capter les clics ; le d
    l'assumer (le drag devient moins fluide).
 3. **`AICE_LAYER=1`** : overlay sans ancre, au-dessus de tout, sans tâche dans le
    panel. Le chemin layer-shell est écrit mais n'a pas été essayé en conditions réelles.
-4. **Le ressenti du dégradé d'ombre** (0,9 d'intensité, flou 40 px, dévers 8 px) et
-   du fade (90 px) au toucher, et le scroll à 2 000 bulles.
+4. **Le gout de l'ombre** (teinte `0.07/0.24/0.62`, intensité 0,8, flou 30 px, halo
+   38 %, dévers 7 px) et du fade (90 px) au toucher, et le scroll à 2 000 bulles. Ces
+   réglages sont discutables — `CardShadow` est un composant unique, ils se changent
+   là, et `AICE_SHADOW=0` permet de comparer avec/sans en direct.
 5. La persistance de position : relancer et vérifier que la fenêtre se remet où elle
    était (section `[window]` de `~/.config/a-ice/a-ice.conf`).
 
@@ -179,6 +206,13 @@ a éteintes**. Une bulle éteinte ne doit pas flouter ni capter les clics ; le d
 - **Un flou posé sur un rectangle est un piège** : `layer.effect` ne peut pas déborder
   de la texture de l'item. Pour une ombre, utiliser l'effet d'ombre de `MultiEffect`
   sur l'item qui doit l'ombre, avec `autoPaddingEnabled`.
+- **Le texte dans le layer = ombre par glyphe**. L'effet d'ombre travaille sur le
+  contenu du layer : si les `Text` y figurent, chacun devient une source d'ombre et
+  un halo sombre apparait sous les lettres. D'où conteneur + `*Fill` : le layer ne
+  voit que la matière.
+- **Ombre bleue trop forte** : une teinte éclairée avec un halo large
+  (`0.15/0.42/1`, intensité 1, flou 40) **colore toute la fenêtre**, parce qu'on la
+  voit aussi à travers les cartes translucides. Bleu profond et halo court.
 - **`layer.transparentBorder` n'existe plus en Qt 6.11** (il est remplacé par
   `autoPaddingEnabled`) : le QML refuse de charger avec
   `Cannot assign to non-existent property "transparentBorder"`.
@@ -220,7 +254,8 @@ a éteintes**. Une bulle éteinte ne doit pas flouter ni capter les clics ; le d
 
 À basculer tel quel dans la vraie GUI : `GlassHelper` (presque rien à changer, sinon
 les cartes réelles), la liste ancrée en bas + modèle le plus récent en tête, le fade
-par carte (fraction sortie de la zone), l'ombre par effet Qt, le drag natif avec
+par carte (fraction sortie de la zone), l'ombre par effet Qt (teintée, posée sur la
+matière seule), le drag natif avec
 fallback, et l'outil de capture `AICE_SHOT`. À ne **pas** garder : `seedFake()` et
 `replies` (bouchons de démo), le badge de mesures (outil de mesure, pas une feature),
 et les variables `AICE_*` côté moteur. Le point d'entrée du vrai travail : brancher
