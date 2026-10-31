@@ -40,6 +40,9 @@ target_link_libraries(a-ice
 
 # Installation (appelable après build: sudo cmake --install .)
 install(TARGETS a-ice DESTINATION bin)
+
+# POC refonte Qt Quick (branche v2) — voir docs/v2-rewrite/PLAN.md
+add_subdirectory(poc)
 install(FILES metadata.xml aice.desktop DESTINATION share/plasma/quickapplets/a-ice)
 install(FILES metadata.xml aice.desktop DESTINATION share/plasma/services)
 install(FILES config.example.json SOUL.example.md DESTINATION share/a-ice)
