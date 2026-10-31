@@ -244,7 +244,7 @@ Window {
                 }
                 Item { Layout.fillWidth: true }
                 Text {
-                    text: "2000 bulles · AICE_LAYER=1 → overlay layer-shell"
+                    text: "2000 bulles · AICE_LAYER=0 → mode fenêtre de debug"
                     color: Qt.rgba(1, 1, 1, 0.25)
                     font.pointSize: 9
                 }

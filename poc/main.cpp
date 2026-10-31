@@ -48,7 +48,13 @@ public:
         m_attached = true;
         window->setTitle(QStringLiteral("a-ice 2.0 — POC"));
 
-        if (qEnvironmentVariable("AICE_LAYER") == "1") {
+        // Overlay layer-shell par défaut sous Wayland : la fenêtre est une couche
+        // du compositeur (pas une fenêtre en fond, ni dans la taskbar/l'aperçu).
+        // AICE_LAYER=0 force l'ancien mode fenêtre (pratique pour debug KWin).
+        const bool useLayer = QGuiApplication::platformName() == QStringLiteral("wayland")
+            && qEnvironmentVariable("AICE_LAYER") != "0";
+
+        if (useLayer) {
             // Couche overlay via wlr-layer-shell (Wayland/KWin) : top, ancré aux 4 bords, clavier à la demande.
             LayerShellQt::Window::Anchors anchors;
             anchors.setFlag(LayerShellQt::Window::AnchorTop);
@@ -68,7 +74,7 @@ public:
             KX11Extras::setState(window->winId(), NET::SkipTaskbar);
         }
         QSettings s;
-        if (m_x >= 0)
+        if (m_x >= 0 && !useLayer)
             window->setPosition(m_x, m_y);
         KWindowEffects::enableBlurBehind(window, true);
 
