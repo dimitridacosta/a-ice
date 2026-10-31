@@ -13,12 +13,15 @@ Window {
 
     flags: Qt.FramelessWindowHint | Qt.Window
     color: "transparent"
-    visible: true
+    // visible après helper.attach() : le layer shell doit être configuré avant le show
     width: helper.windowWidth
     height: helper.windowHeight > 0 ? helper.windowHeight : Screen.height
     minimumHeight: 320
 
-    Component.onCompleted: helper.attach(root)
+    Component.onCompleted: {
+        helper.attach(root)
+        root.visible = true
+    }
 
     // Fond vitré plein écran (blur derrière assuré côté KWin).
     Rectangle {
@@ -58,13 +61,12 @@ Window {
                     }
 
                     // Stress test continu (AICE_STRESS=1) pour mesurer le frame time.
-                    Timer {
-                        interval: 8
+                    // FrameAnimation : reçoit un tick à chaque frame (vsync) — mesure vraie.
+                    FrameAnimation {
                         running: helper.stress && chatList.contentHeight > chatList.height
-                        repeat: true
                         onTriggered: {
                             let end = chatList.contentHeight - chatList.height
-                            chatList.contentY = (chatList.contentY + 14) % Math.max(end, 1)
+                            chatList.contentY = (chatList.contentY + 16) % Math.max(end, 1)
                         }
                     }
 

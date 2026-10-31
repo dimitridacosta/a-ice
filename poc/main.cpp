@@ -46,10 +46,6 @@ public:
         if (m_attached || !window)
             return;
         m_attached = true;
-
-        QSettings s;
-        if (m_x >= 0)
-            window->setPosition(m_x, m_y);
         window->setTitle(QStringLiteral("a-ice 2.0 — POC"));
 
         if (qEnvironmentVariable("AICE_LAYER") == "1") {
@@ -71,6 +67,9 @@ public:
             KX11Extras::setState(window->winId(), NET::KeepAbove);
             KX11Extras::setState(window->winId(), NET::SkipTaskbar);
         }
+        QSettings s;
+        if (m_x >= 0)
+            window->setPosition(m_x, m_y);
         KWindowEffects::enableBlurBehind(window, true);
 
         // Persistance de la position à chaque déplacement/resize.
