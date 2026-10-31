@@ -3,6 +3,13 @@
 #include "Glass.h"
 #include "llama_client.h"
 #include "Config.h"
+#include "ToolRegistry.h"
+#include "Tool.h"
+#include "tools/TerminalTool.h"
+#include "tools/TerminalSafety.h"
+#include "tools/BraveSearchTool.h"
+#include "tools/WebFetchTool.h"
+#include "voice/VoiceStream.h"
 #include <KWindowEffects>
 #include <QPainterPath>
 #include <QPainter>
@@ -11,6 +18,7 @@
 #include <QScrollBar>
 #include <QScreen>
 #include <QGuiApplication>
+#include <QLocale>
 #include <QStyle>
 #include <QRegularExpression>
 #include <QKeyEvent>
@@ -20,6 +28,7 @@
 #include <QTextBlock>
 #include <QTextLayout>
 #include <QAbstractTextDocumentLayout>
+#include <QSettings>
 
 namespace {
 // Region arrondie (polygone issu d'un QPainterPath) — utilisée pour le blur
@@ -32,6 +41,11 @@ QRegion roundedRegion(const QRect &r, int radius)
     QPolygonF poly = path.toFillPolygon();
     return QRegion(poly.toPolygon());
 }
+
+// Prompt de compaction du contexte (commande /compact). Demande au LLM un
+// résumé structuré de la conversation pour que l'agent continue sans perdre le
+// fil ni les détails précis des derniers échanges. Le résumé est réinjecté en
+// system prompt (après le SOUL) au début de la conversation suivante.
 
 // Barre de prompt : peinte sur la fenêtre parente (ombre non clippée).
 class GlassBar : public QFrame
@@ -68,15 +82,60 @@ private:
 //  alignement parfait et un chevauchement libre.)
 } // namespace
 
+const QString kCompactPrompt = QStringLiteral(
+    "You are a context-compaction assistant. Summarize the conversation so the "
+    "main assistant can continue seamlessly — preserving the detail that matters "
+    "while cutting tokens. This is a REDUCTION, not a restatement.\n\n"
+    "PRESERVE (keep the essentials):\n"
+    "- Goal and current state: what the user is trying to do, what's done, what's pending.\n"
+    "- Key decisions, constraints, preferences agreed on.\n"
+    "- Exact identifiers — file paths, commands, code, config keys, numbers, URLs — \n"
+    "  verbatim, never paraphrased or invented.\n"
+    "- The thread of the last 2-3 exchanges, precise enough that the conversation \n"
+    "  flows naturally (include the most recent user request + assistant answer).\n"
+    "- Open questions / next steps.\n\n"
+    "ELIMINATE (cut the rest):\n"
+    "- Repetition, filler, pleasantries, verbose explanations, intermediate dead-ends.\n"
+    "- Anything not needed to continue the work.\n\n"
+    "Format: tight bullet points grouped by theme. Keep the detail that matters,\n"
+    "drop the noise. Target roughly 20-30% of the input length — a real reduction.\n"
+    "If a previous compacted context is provided, fold it in without repeating it.\n"
+    "Be precise and factual; never invent. Output ONLY the summary.");
+
 ChatWidget::ChatWidget(QWidget *parent)
     : QWidget(parent)
 {
     setupUI();
     setupGlass();
+    setupVoice();
+}
 
-    m_blurTimer.setSingleShot(true);
-    m_blurTimer.setInterval(80);
-    connect(&m_blurTimer, &QTimer::timeout, this, &ChatWidget::updateBlurRegion);
+void ChatWidget::setupVoice()
+{
+    m_voice.reset(new VoiceStream(this));
+    connect(m_client.data(), &LlamaClient::contentChunk,
+            this, [this](const QString &t) { m_voice->feed(t); });
+    connect(m_client.data(), &LlamaClient::responseComplete,
+            this, [this]() { m_voice->finish(); });
+    connect(m_client.data(), &LlamaClient::requestError,
+            this, [this]() { m_voice->stop(); });
+    connect(m_client.data(), &LlamaClient::toolCallsReady,
+            this, [this](const QList<ToolCall> &, const QString &c) {
+                // Le texte avant les tool_calls est déjà passé par feed ;
+                // clôture le tour vocal courant (le reste partira en chunks
+                // des prochains tours, le son suit le contenu, pas les tools).
+                m_voice->finish();
+            });
+    // Serveur TTS mort en plein stream : on prévient une fois (VoiceStream a
+    // abandonné le tour, plus de requeue → pas d'empilement fantôme).
+    connect(m_voice.data(), &VoiceStream::serverLost, this, [this]() {
+        showSystemNote(QStringLiteral("🔇 Serveur voix injoignable en cours de lecture — "
+                                     "tour vocal abandonné. Relance /voice on (ou ddvoice) pour reprendre."));
+    });
+
+    // Persistance /voice on entre sessions (~/.config/a-ice/a-ice.conf, [voice]).
+    QSettings settings(QStringLiteral("a-ice"), QStringLiteral("a-ice"));
+    m_voice->setEnabled(settings.value(QStringLiteral("voice/enabled"), false).toBool());
 }
 
 ChatWidget::~ChatWidget() = default;
@@ -93,8 +152,14 @@ void ChatWidget::setupUI()
             this, &ChatWidget::onContentChunk);
     connect(m_client.data(), &LlamaClient::responseComplete,
             this, &ChatWidget::onResponseComplete);
+    connect(m_client.data(), &LlamaClient::toolCallsReady,
+            this, &ChatWidget::onToolCallsReady);
+    connect(m_client.data(), &LlamaClient::thinkingUpdated,
+            this, &ChatWidget::onThinkingUpdated);
     connect(m_client.data(), &LlamaClient::requestError,
             this, &ChatWidget::onRequestError);
+    connect(m_client.data(), &LlamaClient::summaryReady,
+            this, &ChatWidget::onSummaryReady);
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -125,8 +190,13 @@ void ChatWidget::setupUI()
 
     // Le scroll déplace les bulles en coordonnées fenêtre → il faut recalculer
     // la region blur pour qu'elle suive le contenu (sinon décalage blur/contenu).
+    // On recalcule le blur SYNCHRONE au scroll (pas de throttle) pour qu'il
+    // colle au contenu frame par frame : l'ancien throttle laissait le blur ~80ms
+    // en arrière des bulles, d'où le décalage visible pendant le scroll.
     connect(m_scrollArea->verticalScrollBar(), &QAbstractSlider::valueChanged,
-            this, &ChatWidget::scheduleBlurUpdate);
+            this, &ChatWidget::onScrollMoved);
+    connect(m_scrollArea->verticalScrollBar(), &QAbstractSlider::valueChanged,
+            this, &ChatWidget::onScrollChanged);
 
     root->addWidget(m_scrollArea, 1);
 
@@ -226,20 +296,26 @@ void ChatWidget::setupGlass()
 
 void ChatWidget::scheduleBlurUpdate()
 {
-    update(); // fenêtre : redessine toutes les ombres + planifie le blur
-    if (!m_blurTimer.isActive()) m_blurTimer.start();
+    // Déclenche un repaint : le blur est recalculé dans paintEvent (géométrie
+    // à jour, commit à la frame courante) -> synchronisé avec le contenu.
+    update();
 }
 
-void ChatWidget::updateBlurRegion()
+void ChatWidget::applyBlurRegion()
 {
     // Blur KWin + masque de clic appliqués UNIQUEMENT derrière les éléments
     // visibles (barre + chaque bulle). La fenêtre elle-même reste totalement
     // transparente : pas de grande carte floutée, juste des bulles verre
     // flottantes indépendantes. Le click-through passe hors des bulles.
+    //
+    // Appelée dans paintEvent : la géométrie est à jour (layout fait par Qt
+    // avant le paint) et le commit Wayland se fait à la fin de ce paint (frame
+    // courante) -> le blur est synchronisé avec le contenu affiché, sans retard
+    // d'une frame sur la taille de la bulle pendant l'écriture.
     QWindow *win = window()->windowHandle();
     if (!win) {
         if (isVisible())
-            QTimer::singleShot(100, this, &ChatWidget::updateBlurRegion);
+            QTimer::singleShot(0, this, [this]() { update(); });
         return;
     }
 
@@ -273,23 +349,62 @@ void ChatWidget::updateBlurRegion()
         return;
     m_lastRegion = region;
 
-    // Pas de setMask : il provoque un re-reshape de la fenêtre à chaque update
-    // → clignotement. La fenêtre reste transparente hors des bulles ; les clics
-    // dans la colonne sont captés (compromis acceptable pour la stabilité).
+    // Input region (click-through) : on set le mask sur le QWindow natif,
+    // PAS sur le QWidget. Sous Wayland, QWindow::setMask() definit
+    // l input region du surface (wl_surface_set_input_region) : seuls les
+    // pixels dans la region captent les clics, le reste passe aux fenetres
+    // derriere. Contrairement a QWidget::setMask(), pas de re-reshape
+    // visible donc pas de clignotement. Indispensable en LayerTop pour ne
+    // pas capturer les clics sur le panel KDE dans les zones sans bulle.
+    win->setMask(region);
     KWindowEffects::enableBlurBehind(win, true, region);
 
-    // CRUCIAL : enableBlurBehind ne commit pas la surface Wayland. KWin n'applique
-    // le nouveau blur qu'au prochain repaint de la fenêtre (d'où l'effet « bouger
-    // la souris / ouvrir le menu KDE pour que ça se redessine »). On force donc un
-    // repaint immédiat pour committer la surface et déclencher le re-render du blur.
-    if (auto *top = window()) top->repaint();
+    // Pas de repaint ici : on est appelée dans paintEvent, le commit Wayland
+    // se fait à la fin de ce paint (frame courante). Le blur est donc appliqué
+    // à la même frame que le contenu affiché -> pas de décalage.
 }
 
-void ChatWidget::paintEvent(QPaintEvent *)
+void ChatWidget::paintEvent(QPaintEvent *e)
 {
+    // Recalcule le blur ICI : paintEvent s'exécute après le layout (géométrie à
+    // jour) et le commit Wayland se fait à la fin de ce paint (frame courante),
+    // synchronisé avec le contenu de la bulle (peint dans le même paint par le
+    // QScrollArea). C'est ce qui élimine le décalage bulle/blur pendant
+    // l'écriture : la taille de la bulle est à jour au moment du recalcul, pas
+    // une frame en retard.
+    applyBlurRegion();
+
     // Toutes les ombres (bulles + barre) peintes sur la fenêtre en une passe →
     // alignement parfait et chevauchement libre (addition des ombres).
+    //
+    // PERF : on ne peint QUE les ombres des bulles qui intersectent le viewport
+    // (+ marge pour le halo qui déborde). Sans ça, une longue conversation ferait
+    // dessiner à la fenêtre parente toutes les ombres — même hors écran — à chaque
+    // repaint (scroll + chaque chunk de stream), d'où un coût qui croît avec
+    // l'historique et ralentit le stream. Qt n'optimise pas ça tout seul car les
+    // ombres sont peintes par le parent (pas des widgets enfants), donc elles
+    // bypassent le culling de Qt sur les widgets hors viewport.
     QPainter p(this);
+
+    // Clip sur la zone dirty demandée par Qt (anti-travail inutile).
+    const QRegion dirty = e->region();
+    if (!dirty.isEmpty())
+        p.setClipRegion(dirty);
+
+    // Viewport du scrollArea en coords ChatWidget, avec une marge pour ne pas
+    // couper le halo des bulles partiellement visibles (pad ombre + offset).
+    const int pad = kGlassBlur * 2;              // 20px de halo
+    const int margin = pad + kGlassShadowOffset; // 23px
+    const QRect vp = m_scrollArea->viewport()->rect()
+        .translated(m_scrollArea->viewport()->mapTo(this, QPoint(0, 0)))
+        .adjusted(-margin, -margin, margin, margin);
+
+    // Ombres des bulles : clipées à la zone du scrollArea (au-dessus de la
+    // barre de prompt). Sans ça, l'ombre d'une bulle en bas du viewport
+    // déborde sous la barre pendant le scroll up (les ombres sont peintes par
+    // la fenêtre parente, donc bypassent le clip du viewport du QScrollArea).
+    p.save();
+    p.setClipRect(m_scrollArea->geometry(), Qt::IntersectClip);
 
     // Ombres des bulles (coordonnées fenêtre, scroll pris en compte par mapTo).
     for (int i = 0; i < m_messagesLayout->count(); ++i) {
@@ -298,10 +413,13 @@ void ChatWidget::paintEvent(QPaintEvent *)
         if (!b) continue;
         const QRect card = QRect(b->mapTo(this, QPoint(0, 0)), b->size())
             .adjusted(kGlassInset, kGlassInset, -kGlassInset, -kGlassInset);
+        if (!vp.intersects(card))
+            continue;  // hors écran : on skip l'ombre (gain sur longues conversations)
         drawShadow(p, b->shadowImage(), card);
     }
+    p.restore();
 
-    // Ombre de la barre de prompt.
+    // Ombre de la barre de prompt (toujours visible, non clipée au scrollArea).
     if (m_promptBar) {
         const QRect card = m_promptBar->geometry()
             .adjusted(kGlassInset, kGlassInset, -kGlassInset, -kGlassInset);
@@ -340,7 +458,233 @@ void ChatWidget::setServerUrl(const QString &url)
 
 void ChatWidget::applyConfig(const Config &config)
 {
-    m_client->setConfig(config);
+    m_config = config;
+    m_client->setConfig(m_config);
+    setupTools(m_config);
+}
+
+void ChatWidget::setupTools(const Config &config)
+{
+    m_maxToolIterations = config.tools().maxToolIterations;
+    if (!config.tools().enabled) {
+        m_registry.reset();
+        m_client->setTools({});
+        return;
+    }
+    m_registry.reset(new ToolRegistry(this));
+    m_registry->add(new TerminalTool(config.tools().terminalWorkdir, this));
+    m_registry->add(new BraveSearchTool(config.tools().braveApiKey, this));
+    m_registry->add(new WebFetchTool(this));
+    m_client->setTools(m_registry->toJsonArray());
+    qInfo() << "[a-ice] tools registered:" << m_registry->toJsonArray().size();
+}
+
+bool ChatWidget::switchModelCommand(const QString &aliasOrName)
+{
+    QString msg;
+    const bool ok = m_config.switchModel(aliasOrName, &msg);
+    if (ok) {
+        // Pousse la nouvelle sélection (provider + modèle) au client.
+        m_client->setConfig(m_config);
+        msg = QStringLiteral("✓ %1").arg(msg);
+    } else {
+        msg = QStringLiteral("✗ %1").arg(msg);
+    }
+    if (!m_currentBubble) startAssistantBubble();
+    clearWaitingBlock();
+    if (m_currentBubble) {
+        auto *cb = m_currentBubble->addContentBlock();
+        cb->set(msg);
+    }
+    m_currentBubble = nullptr;
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
+    m_waitingBlock   = nullptr;
+    scheduleBlurUpdate();
+    return ok;
+}
+
+void ChatWidget::showSystemNote(const QString &text)
+{
+    // Bulle système : une carte assistant avec un content block statique (pas
+    // de streaming, pas de waiting block).
+    if (!m_currentBubble) startAssistantBubble();
+    clearWaitingBlock();
+    if (m_currentBubble) {
+        auto *cb = m_currentBubble->addContentBlock();
+        cb->set(text);
+    }
+    m_currentBubble = nullptr;
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
+    m_waitingBlock   = nullptr;
+    scheduleBlurUpdate();
+}
+
+void ChatWidget::compactConversation()
+{
+    if (m_isTyping) {
+        showSystemNote(QStringLiteral("✗ Compaction impossible pendant la génération."));
+        return;
+    }
+    if (m_messages.isEmpty()) {
+        showSystemNote(QStringLiteral("✗ Rien à compacter : la conversation est vide."));
+        return;
+    }
+    // Garde : ne pas compacter un contexte court. Le résumé structuré fait
+    // ~400-600 tokens minimum ; si l'historique est plus court, /compact
+    // ajouterait du contexte au lieu d'en enlever.
+    const int tokensAvant = m_client->estimateContextTokens(m_messages);
+    const int nMsgAvant = m_messages.size();
+    if (tokensAvant < 1200 || nMsgAvant < 4) {
+        showSystemNote(QStringLiteral("✗ Contexte encore court (~%1 tokens, %2 messages) — pas besoin de compacter.")
+                           .arg(tokensAvant).arg(nMsgAvant));
+        return;
+    }
+
+    // Formatte l'historique (sauf system) pour le LLM.
+    // NOTE : m_messages ne contient QUE les content (résultats) — jamais le
+    // thinking/reasoning, qui est affiché (ThinkingBlock) mais non persisté
+    // (cf. onThinkingChunk vs onContentChunk/onResponseComplete). La compaction
+    // envoie donc uniquement le résultat, pas la réflexion.
+    QString conv;
+    for (const auto &msg : m_messages) {
+        if (msg.role == QLatin1String("system")) continue;
+        QString label;
+        if (msg.role == QLatin1String("user")) label = QStringLiteral("User");
+        else if (msg.role == QLatin1String("assistant")) label = QStringLiteral("Assistant");
+        else if (msg.role == QLatin1String("tool")) label = QStringLiteral("Tool result");
+        else label = msg.role;
+        conv += label + QStringLiteral(": ") + msg.content + QStringLiteral("\n\n");
+    }
+    conv = conv.trimmed();
+    if (conv.isEmpty()) {
+        showSystemNote(QStringLiteral("✗ Rien à compacter : aucun message utilisateur/assistant."));
+        return;
+    }
+
+    // Inclut le résumé compacté précédent (s'il existe) dans la conversation à
+    // résumer : sinon un 2e /compact perdrait le contexte antérieur (le résumé
+    // précédent est en system prompt, pas dans m_messages).
+    const QString prevSummary = m_client->contextSummary();
+    QString toSummarize;
+    if (!prevSummary.isEmpty())
+        toSummarize = QStringLiteral("Previous compacted context:\n\n") + prevSummary
+                      + QStringLiteral("\n\n--- New messages since last compaction ---\n\n");
+    toSummarize += conv;
+
+    const int nbAvant = m_messages.size();
+    m_lastCompactTokensAvant = tokensAvant;
+    showSystemNote(QStringLiteral("⏳ Compaction du contexte (%1 messages, ~%2 tokens)…")
+                       .arg(nbAvant).arg(tokensAvant));
+
+    // Requête de résumé : [system = prompt de compaction, user = conversation].
+    QList<ChatMessage> req;
+    ChatMessage sysMsg;
+    sysMsg.role = QStringLiteral("system");
+    sysMsg.content = kCompactPrompt;
+    ChatMessage userMsg;
+    userMsg.role = QStringLiteral("user");
+    userMsg.content = QStringLiteral("Here is the conversation to summarize:\n\n") + toSummarize;
+    req.append(sysMsg);
+    req.append(userMsg);
+
+    m_client->requestSummary(req);
+}
+
+void ChatWidget::onSummaryReady(const QString &summary)
+{
+    // Le LLM a produit un résumé du contexte. On l'injecte en system prompt
+    // (après le SOUL) pour les prochains messages, et on remplace l'historique
+    // par le résumé (le contexte est compacté).
+    const QString ctx = QStringLiteral(
+        "## Conversation context (compacted summary)\n\n") + summary.trimmed();
+
+    // Sauvegarde au cas où le résumé ne réduirait pas (on restaurera).
+    const QList<ChatMessage> savedMessages = m_messages;
+    const QString savedSummary = m_client->contextSummary();
+    const int avant = m_lastCompactTokensAvant;
+
+    m_client->setContextSummary(ctx);
+    m_messages.clear();
+    const int apres = m_client->estimateContextTokens(m_messages);  // SOUL + tools + résumé
+    const int nb = savedMessages.size();
+
+    // Garde : si le résumé ne réduit PAS le contexte, on annule — on ne va pas
+    // ajouter du contexte pour rien, on garde l'historique intact.
+    if (avant > 0 && apres >= avant) {
+        m_messages = savedMessages;
+        m_client->setContextSummary(savedSummary);
+        m_lastCompactTokensAvant = -1;
+        showSystemNote(QStringLiteral("✗ Résumé trop long (pas de réduction : ~%1 → ~%2 tokens) — compaction annulée, historique conservé.")
+                           .arg(avant).arg(apres));
+        qInfo() << "[a-ice] compaction annulée : résumé trop long" << avant << "->" << apres;
+        return;
+    }
+
+    QString recap = QStringLiteral("✓ Contexte compacté (%1 messages → résumé en system).").arg(nb);
+    if (avant > 0 && apres < avant) {
+        const int gagne = avant - apres;
+        const double pct = gagne * 100.0 / avant;
+        recap += QStringLiteral("  ~%1 → ~%2 tokens (−%3, %4% gagné).")
+                     .arg(avant).arg(apres).arg(gagne)
+                     .arg(QString::number(pct, 'f', 0));
+    }
+    m_lastCompactTokensAvant = -1;
+    recap += QStringLiteral("\n\n%1").arg(summary.trimmed());
+    showSystemNote(recap);
+    qInfo() << "[a-ice] contexte compacté :" << nb << "messages ->" << apres << "tokens";
+}
+
+void ChatWidget::showContextInfo()
+{
+    const auto &mdl = m_config.model();
+    const QString alias = m_config.currentModelAlias();
+    const QString provider = m_config.currentProviderId();
+    const int tokens = m_client->estimateContextTokens(m_messages);
+    const int nMsg = m_messages.size();
+    const QLocale loc;
+
+    // Barre de progression ASCII (20 blocs) pour visualiser le % de fenêtre
+    // utilisée au premier coup d'œil.
+    auto bar = [](double pct) {
+        const int n = 20;
+        const int filled = qBound(0, static_cast<int>(qRound(pct / 100.0 * n)), n);
+        QString b;
+        for (int i = 0; i < n; ++i)
+            b += (i < filled) ? QChar(0x2588) : QChar(0x2591);  // █ / ▒
+        return b;
+    };
+
+    QString s = QStringLiteral("## Contexte\n\n");
+    s += QStringLiteral("**Modèle** — `%1` *(%2)* @ `%3`\n").arg(alias, mdl.name, provider);
+    s += QStringLiteral("- temp `%1`\n").arg(mdl.temperature);
+    s += QStringLiteral("- `%1`\n").arg(mdl.stream ? QStringLiteral("stream") : QStringLiteral("no stream"));
+    s += QStringLiteral("- sortie max `%1`\n\n").arg(loc.toString(mdl.maxTokens));
+    s += QStringLiteral("**Contexte** — ~%1 tokens\\\n").arg(loc.toString(tokens));
+    if (nMsg == 0 && !m_client->contextSummary().isEmpty())
+        s += QStringLiteral("system seul (résumé compacté)\\\n\n");
+    else
+        s += QStringLiteral("system + %1 messages (estimé chars/4)\\\n\n").arg(nMsg);
+
+    if (mdl.contextWindow > 0) {
+        const double pct = tokens * 100.0 / mdl.contextWindow;
+        const int restant = mdl.contextWindow - tokens;
+        s += QStringLiteral("**Fenêtre** — %1 tokens\\\n").arg(loc.toString(mdl.contextWindow));
+        s += QStringLiteral("`%1`\\\n").arg(bar(pct));
+        s += QString::number(pct, 'f', 1) + QStringLiteral(" % utilisé\\\n");
+        s += QStringLiteral("%1 restants\n").arg(loc.toString(restant));
+        if (tokens > mdl.contextWindow * 0.9)
+            s += QStringLiteral("\n> ⚠️ Proche du max — `/compact` pour réduire.\n");
+    } else {
+        s += QStringLiteral("> Fenêtre max **non configurée** — ajouter `context_window` au modèle.\n");
+    }
+
+    showSystemNote(s);
+    qInfo() << "[a-ice] /context :" << tokens << "tokens," << nMsg << "messages, modèle"
+             << mdl.name << "@" << provider;
 }
 
 void ChatWidget::onSendClicked()
@@ -348,24 +692,244 @@ void ChatWidget::onSendClicked()
     QString text = m_promptEdit->toPlainText().trimmed();
     if (text.isEmpty()) return;
     m_promptEdit->clear();
+
+    // Commandes slash : /new, /help, ... — interceptees avant l'envoi au LLM.
+    if (text.startsWith(QLatin1Char('/'))) {
+        if (handleSlashCommand(text))
+            return;  // commande consommee
+        // Commande inconnue : on tombe sur onSendMessage (le LLM peut repondre,
+        // ou pas — libre a l'utilisateur).
+    }
+
     onSendMessage(text);
+}
+
+bool ChatWidget::handleSlashCommand(const QString &text)
+{
+    const QString cmd = text.section(QLatin1Char(' '), 0, 0).toLower();
+    const QString arg = text.section(QLatin1Char(' '), 1);
+
+    if (cmd == QLatin1String("/voice")) {
+        return handleVoiceCommand(arg);
+    }
+    if (cmd == QLatin1String("/new") || cmd == QLatin1String("/clear")) {
+        resetConversation();
+        return true;
+    }
+    if (cmd == QLatin1String("/model")) {
+        if (arg.trimmed().isEmpty()) {
+            // Affiche le modèle courant.
+            const QString cur = QStringLiteral("Modèle courant : %1 (%2) @ %3")
+                .arg(m_config.currentModelAlias(),
+                     m_config.model().name,
+                     m_config.currentProviderId());
+            if (!m_currentBubble) startAssistantBubble();
+            clearWaitingBlock();
+            if (m_currentBubble) {
+                auto *cb = m_currentBubble->addContentBlock();
+                cb->set(cur);
+            }
+            m_currentBubble = nullptr;
+            m_activeThinking = nullptr;
+            m_activeContent  = nullptr;
+            m_activeTool     = nullptr;
+            m_waitingBlock   = nullptr;
+            scheduleBlurUpdate();
+        } else {
+            switchModelCommand(arg);
+        }
+        return true;
+    }
+    if (cmd == QLatin1String("/models")) {
+        // Liste tous les modèles (par provider), marque le courant.
+        QString out;
+        for (const auto &p : m_config.providers()) {
+            out += QStringLiteral("[%1] %2\n").arg(p.id, p.type);
+            for (const auto &m : p.models) {
+                const bool cur = (p.id == m_config.currentProviderId()
+                                  && m.alias == m_config.currentModelAlias());
+                out += QStringLiteral("  %1 %2%3\n")
+                    .arg(cur ? QStringLiteral("*") : QStringLiteral(" "),
+                         m.alias,
+                         m.alias != m.name ? QStringLiteral("  (%1)").arg(m.name) : QString());
+            }
+        }
+        if (!m_currentBubble) startAssistantBubble();
+        clearWaitingBlock();
+        if (m_currentBubble) {
+            auto *cb = m_currentBubble->addContentBlock();
+            cb->set(QStringLiteral("Modèles disponibles :\n") + out.trimmed());
+        }
+        m_currentBubble = nullptr;
+        m_activeThinking = nullptr;
+        m_activeContent  = nullptr;
+        m_activeTool     = nullptr;
+        m_waitingBlock   = nullptr;
+        scheduleBlurUpdate();
+        return true;
+    }
+    if (cmd == QLatin1String("/compact")) {
+        compactConversation();
+        return true;
+    }
+    if (cmd == QLatin1String("/context") || cmd == QLatin1String("/tokens")) {
+        showContextInfo();
+        return true;
+    }
+    if (cmd == QLatin1String("/help") || cmd == QLatin1String("/commands")) {
+        // Affiche l'aide dans une carte systeme (style erreur, mais informatif).
+        if (!m_currentBubble) startAssistantBubble();
+        clearWaitingBlock();
+        if (m_currentBubble) {
+            auto *cb = m_currentBubble->addContentBlock();
+            cb->set(QStringLiteral("Commandes disponibles :\n"
+                "- /new  (ou /clear) : reinitialise la conversation\n"
+                "- /model [alias|nom] : bascule de modele a la volee\n"
+                "- /models : liste les modeles disponibles\n"
+                "- /context : infos contexte (tokens, modele, fenetre)\n"
+                "- /compact : compacte le contexte (résumé injecté)\n"
+                "- /voice [on|off] : voix TTS en direct (toggle)\n"
+                "- /help : affiche cette aide"));
+        }
+        m_currentBubble = nullptr;
+        m_activeThinking = nullptr;
+        m_activeContent  = nullptr;
+        m_activeTool     = nullptr;
+        m_waitingBlock   = nullptr;
+        scheduleBlurUpdate();
+        return true;
+    }
+    return false;  // commande inconnue
+}
+
+bool ChatWidget::handleVoiceCommand(const QString &arg)
+{
+    const QString a = arg.trimmed().toLower();
+    bool on;
+    if (a == QLatin1String("on") || a == QLatin1String("1") || a == QLatin1String("true"))
+        on = true;
+    else if (a == QLatin1String("off") || a == QLatin1String("0") || a == QLatin1String("false"))
+        on = false;
+    else
+        on = !m_voice->enabled();   // toggle par défaut
+
+    if (on) {
+        m_voice->setEnabled(true);
+        showSystemNote(QStringLiteral("🔊 Voix activée — je parle au fil de l'eau."));
+    } else {
+        // Off immédiat : son en cours coupé + file serveur vidée + buffer local.
+        m_voice->stop();
+        m_voice->setEnabled(false);
+        // Si (et seulement si) une génération est en cours, on l'interrompt :
+        // couper la voix ne doit pas laisser arriver du texte qui repartirait
+        // dans la voix suivante. Pas de génération → rien à interrompre.
+        if (m_isTyping)
+            onStopClicked();
+        showSystemNote(QStringLiteral("🔇 Voix coupée — génération interrompue s'il y en avait une."));
+    }
+
+    // Persistance de l'état entre sessions (relu au prochain démarrage, cf. setupVoice).
+    QSettings settings(QStringLiteral("a-ice"), QStringLiteral("a-ice"));
+    settings.setValue(QStringLiteral("voice/enabled"), on);
+
+    qInfo() << "[a-ice] /voice" << (on ? "on" : "off") << "·" << m_voice->statusLine();
+    return true;
+}
+
+void ChatWidget::resetConversation()
+{
+    // Coupe tout ce qui pourrait tourner (generation, tools en cours).
+    m_interruptRequested = true;
+    m_client->cancel();
+    if (m_registry) m_registry->cancelAll();
+
+    // Retire toutes les bulles de la zone de messages.
+    // NB : le layout a un stretch en index 0 (insertStretch(0,1)) pour
+    // empiler les bulles en bas. takeAt(0) le retire aussi -> il faut le
+    // re-inserer apres, sinon la prochaine bulle s'etire en pleine page
+    // (plus de poussee vers le bas). Bug vu par Dim apres /new.
+    QLayoutItem *item;
+    while ((item = m_messagesLayout->takeAt(0)) != nullptr) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+    m_messagesLayout->insertStretch(0, 1);  // stretch du haut (empile en bas)
+
+    // Reset l'etat API + UI.
+    m_messages.clear();
+    m_currentBubble = nullptr;
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
+    m_waitingBlock   = nullptr;
+    m_currentContent.clear();
+    m_toolIterations = 0;
+    m_interruptRequested = false;
+    m_toolCallInProgressActive = false;
+    m_toolCallInProgressId.clear();
+    m_toolCallInProgressName.clear();
+    m_sessionApprovedPatterns.clear();  // nouvelle conversation = nouveaux approvals
+    if (m_voice)
+        m_voice->reset();
+    m_isTyping = false;
+    m_autoScroll = true;  // nouvelle conversation = on suit a nouveau
+    // /new : on repart de zéro, on abandonne aussi le contexte compacté.
+    m_client->setContextSummary(QString());
+    setGenerating(false);
+
+    scheduleBlurUpdate();
+    qInfo() << "[a-ice] conversation reinitialisee (/new)";
 }
 
 void ChatWidget::onStopClicked()
 {
-    // Interrompt la requête en cours. La bulle en cours reste affichée telle
-    // quelle (réflexion + contenu partiels), et on l'enregistre dans
-    // l'historique pour le tour suivant.
+    // Interrompt la requête ET l'execution d'un tool en cours. La bulle reste
+    // affichee telle quelle (reflexion + contenu partiels), et on l'enregistre
+    // dans l'historique pour le tour suivant. Voir ROADMAP item 8.
+    m_interruptRequested = true;
     m_client->cancel();
+    if (m_registry)
+        m_registry->cancelAll();
+    if (m_voice && m_voice->enabled())
+        m_voice->stop();   // stop immédiat : son + file serveur + buffer
+
+    // Si un tool est en cours, on injecte immediatement une reponse role="tool"
+    // "cancelled" pour que l'historique reste coherent (sinon l'API rejette au
+    // prochain sendMessages : tool_call sans reponse). Le callback du tool, quand
+    // il arrivera, verra m_interruptRequested et ne re-appendera pas.
+    if (m_toolCallInProgressActive) {
+        const QString msg = QStringLiteral("[a-ice] cancelled by user");
+        ChatMessage toolMsg;
+        toolMsg.role = QStringLiteral("tool");
+        toolMsg.toolCallId = m_toolCallInProgressId;
+        toolMsg.toolName = m_toolCallInProgressName;
+        toolMsg.content = sanitizeToolResult(msg);
+        m_messages.append(toolMsg);
+        if (m_activeTool)
+            m_activeTool->setResult(msg, false);
+        m_activeTool = nullptr;
+        m_toolCallInProgressActive = false;
+        m_toolCallInProgressId.clear();
+        m_toolCallInProgressName.clear();
+    }
+
     m_isTyping = false;
 
     if (m_currentBubble) {
+        // Retire le placeholder d'attente si jamais aucun chunk n'est arrivé.
+        clearWaitingBlock();
+        // Ferme la réflexion en cours (si ouverte) avant de figer la carte.
+        if (m_activeThinking) m_activeThinking->collapse();
         ChatMessage assistantMsg;
         assistantMsg.role = "assistant";
         assistantMsg.content = m_currentContent;
         m_messages.append(assistantMsg);
         m_currentBubble = nullptr;
     }
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
     m_currentContent.clear();
     setGenerating(false);
     scheduleBlurUpdate();
@@ -380,6 +944,14 @@ void ChatWidget::setGenerating(bool generating)
     m_sendButton->style()->polish(m_sendButton);
     m_sendButton->setToolTip(generating ? QStringLiteral("Stop generation")
                                          : QStringLiteral("Send"));
+}
+
+void ChatWidget::refocusPrompt()
+{
+    if (m_promptEdit) {
+        m_promptEdit->setFocus();
+        m_promptEdit->moveCursor(QTextCursor::End);
+    }
 }
 
 void ChatWidget::onSendMessage(const QString &text)
@@ -398,8 +970,21 @@ void ChatWidget::onSendMessage(const QString &text)
 
     // Prépare la bulle assistant (gauche, réflexion en direct).
     m_isTyping = true;
+    m_autoScroll = true;  // l'utilisateur vient d'envoyer → on suit la réponse
+    m_toolIterations = 0;
+    m_interruptRequested = false;
     setGenerating(true);
     startAssistantBubble();
+
+    // Nouveau tour vocal : on repart proprement — et si l'ancienne réponse est encore
+    // en train de se lire, elle meurt MAINTENANT : stop() coupe le son en cours,
+    // vide la file serveur et le buffer ; un tour déjà fini = no-op inoffensif.
+    // (Reset() ne vidait que le buffer : l'ancien sujet continuait de se lire
+    // par-dessus le nouveau message. Demande de Dimitri le 26/10.) Le cas « serveur
+    // mort en plein stream » (VoiceStream en « perdu ») reste pris en charge : stop()
+    // repart de zéro comme reset() le faisait.
+    if (m_voice)
+        m_voice->stop();
 
     m_client->sendMessages(m_messages);
     scrollToBottom();
@@ -409,32 +994,70 @@ void ChatWidget::onSendMessage(const QString &text)
 void ChatWidget::startAssistantBubble()
 {
     m_currentContent.clear();
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
     m_currentBubble = new Bubble(Bubble::Role::Assistant, this);
     connect(m_currentBubble, &Bubble::geometryChanged,
             this, &ChatWidget::scheduleBlurUpdate);
     m_messagesLayout->addWidget(m_currentBubble);
     m_currentBubble->show();
+    // Placeholder d'attente : évite une carte vide (amateur) entre le
+    // sendMessages et le premier chunk. Retiré dès qu'un vrai bloc arrive.
+    m_waitingBlock = m_currentBubble->addWaitingBlock();
+    scrollToBottom();
+    scheduleBlurUpdate();
+}
+
+void ChatWidget::clearWaitingBlock()
+{
+    if (!m_waitingBlock)
+        return;
+    m_waitingBlock->stopShimmer();
+    m_waitingBlock->deleteLater();
+    m_waitingBlock = nullptr;
+    scheduleBlurUpdate();
 }
 
 void ChatWidget::onThinkingChunk(const QString &text)
 {
-    if (m_currentBubble) {
-        m_currentBubble->appendThinking(text);
-    }
+    // Une carte par réponse agent ; chaque phase de thinking = un nouveau bloc
+    // empilé dans la carte. Si pas de bloc thinking actif (nouveau tour), on
+    // en crée un. Voir ROADMAP item 6 (révisé : une carte + blocs empilés).
+    if (!m_currentBubble)
+        startAssistantBubble();
+    clearWaitingBlock();
+    if (!m_activeThinking)
+        m_activeThinking = m_currentBubble->addThinkingBlock();
+    m_activeThinking->append(text);
+    scrollToBottom();
+    scheduleBlurUpdate();
+}
+
+void ChatWidget::onThinkingUpdated(const QString &cleanedThinking)
+{
+    // Remplace le thinking affiché par la version nettoyée (sans les blocs
+    // tool_calls inline que le modèle a écrit en réfléchissant).
+    if (m_activeThinking)
+        m_activeThinking->set(cleanedThinking);
     scrollToBottom();
     scheduleBlurUpdate();
 }
 
 void ChatWidget::onContentChunk(const QString &text)
 {
-    m_currentContent.append(text);
-    if (m_currentBubble) {
-        // Premier contenu → on réduit la réflexion (gardée re-dépliable).
-        if (m_currentBubble->thinkingExpanded()) {
-            m_currentBubble->collapseThinking();
-        }
-        m_currentBubble->appendContent(text);
+    if (!m_currentBubble)
+        startAssistantBubble();
+    clearWaitingBlock();
+    // Nouveau bloc content (nouveau tour) → on reset l'accumulation API.
+    if (!m_activeContent) {
+        m_currentContent.clear();
+        m_activeContent = m_currentBubble->addContentBlock();
+        // Premier contenu du tour → on réduit la réflexion (gardée dépliable).
+        if (m_activeThinking) m_activeThinking->collapse();
     }
+    m_currentContent.append(text);
+    m_activeContent->append(text);
     scrollToBottom();
     scheduleBlurUpdate();
 }
@@ -450,36 +1073,339 @@ void ChatWidget::onResponseComplete()
     m_isTyping = false;
     setGenerating(false);
     m_currentBubble = nullptr;
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
+    m_waitingBlock   = nullptr;
     m_currentContent.clear();
+    m_interruptRequested = false;
 
     emit messageReceived(assistantMsg.content);
+    // S'assure d'être tout en bas à la fin du message : le dernier chunk a
+    // scrollé, mais le rendu markdown final peut encore ajuster la hauteur de
+    // la bulle, sinon le scroll reste à l'ancienne position (milieu de bulle).
+    scrollToBottom();
     scheduleBlurUpdate();
+}
+
+void ChatWidget::onToolCallsReady(const QList<ToolCall> &calls, const QString &assistantContent)
+{
+    clearWaitingBlock();
+    // 1. Enregistre le message assistant (avec tool_calls) dans l'historique.
+    //    On le fait AVANT le check de limite : si on stoppe, l'historique doit
+    //    rester cohérent (assistant + tool_calls suivi de leurs réponses role="tool").
+    ChatMessage asstMsg;
+    asstMsg.role = QStringLiteral("assistant");
+    asstMsg.content = assistantContent;
+    asstMsg.toolCalls = calls;
+    m_messages.append(asstMsg);
+
+    // Finalise les blocs du tour courant : content nettoyé (sans les blocs
+    // tool_calls extraits par LlamaClient) + repli de la réflexion. On détache
+    // les blocs actifs : le prochain tour créera de nouveaux blocs dans la
+    // MÊME carte (une carte = toute la réponse agent).
+    m_currentContent = assistantContent;
+    if (m_activeContent)
+        m_activeContent->set(assistantContent);
+    if (m_activeThinking)
+        m_activeThinking->collapse();
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+
+    // 2. Tools désactivés : on ne peut rien exécuter. On répond quand même
+    //    role="tool" à chaque tool_call (sinon l'API rejette le prochain send).
+    if (!m_registry) {
+        for (const ToolCall &tc : calls)
+            appendToolResult(tc, QStringLiteral("Tools are disabled. Do NOT call tools."));
+        onRequestError(QStringLiteral("Tool call received but tools are disabled."));
+        return;
+    }
+
+    // 3. Limite anti-boucle : configurable via tools.max_tool_iterations
+    //    (config.json), 8 par defaut.
+    if (++m_toolIterations > m_maxToolIterations) {
+        // L'API OpenAI-compatible exige une réponse role="tool" pour chaque
+        // tool_call_id. On en injecte une "limit reached" par call avant de
+        // stopper, sinon le prochain sendMessages sera rejeté.
+        for (const ToolCall &tc : calls)
+            appendToolResult(tc, QStringLiteral("Tool iteration limit reached (%1). Do NOT retry.").arg(m_maxToolIterations));
+        if (m_currentBubble) {
+            auto *tb = m_currentBubble->addToolBlock(QStringLiteral("limit"));
+            tb->setResult(QStringLiteral("Tool iteration limit reached (%1). Do NOT retry.").arg(m_maxToolIterations), false);
+        }
+        onRequestError(QStringLiteral("Too many tool iterations (limit %1).").arg(m_maxToolIterations));
+        return;
+    }
+
+    // 4. Lance l'exécution validée.
+    executeToolCallsValidated(calls, 0);
+}
+
+void ChatWidget::appendToolResult(const ToolCall &tc, const QString &result)
+{
+    ChatMessage toolMsg;
+    toolMsg.role = QStringLiteral("tool");
+    toolMsg.toolCallId = tc.id;
+    toolMsg.toolName = tc.name;
+    toolMsg.content = sanitizeToolResult(result);
+    m_messages.append(toolMsg);
+}
+
+void ChatWidget::executeToolCallsValidated(const QList<ToolCall> &calls, int index)
+{
+    if (m_interruptRequested)
+        return;  // Stop demande : on ne lance plus rien.
+
+    if (index >= calls.size()) {
+        // Tous les tools ont répondu : on relance le modèle avec l'historique
+        // mis à jour (incluant les messages role="tool"). La carte reste la
+        // même : le prochain tour ajoutera de nouveaux blocs (thinking/content/
+        // tool) empilés dans la même carte. Une carte = une réponse agent.
+        m_client->sendMessages(m_messages);
+        return;
+    }
+
+    const ToolCall &tc = calls.at(index);
+
+    // (a) Tool inconnu : on n'exécute pas, on répond au modèle avec la liste des
+    //     tools disponibles, puis on passe au tool_call suivant (ne pas stopper).
+    if (!m_registry->find(tc.name)) {
+        const QString msg = QStringLiteral(
+            "Unknown tool '%1'. Available tools: %2. Do NOT retry with this name.")
+            .arg(tc.name, m_registry->availableNames());
+        appendToolResult(tc, msg);
+        if (m_currentBubble) {
+            auto *tb = m_currentBubble->addToolBlock(tc.name);
+            tb->setParams(tc.arguments);
+            tb->setResult(msg, false);
+        }
+        executeToolCallsValidated(calls, index + 1);
+        return;
+    }
+
+    // (b) Arguments invalides : args non vide mais non parsable en JSON.
+    if (!tc.arguments.isEmpty() && tc.parsedArgs().isEmpty()) {
+        const bool truncated = !(tc.arguments.endsWith(QLatin1Char('}'))
+                                 || tc.arguments.endsWith(QLatin1Char(']')));
+        if (truncated) {
+            // Tronqué → on arrête tout (le modèle a buggé sur le streaming).
+            const QString msg = QStringLiteral(
+                "Arguments truncated (incomplete JSON): '%1'. Do NOT retry.")
+                .arg(tc.arguments);
+            appendToolResult(tc, msg);
+            if (m_currentBubble) {
+                auto *tb = m_currentBubble->addToolBlock(tc.name);
+                tb->setParams(tc.arguments);
+                tb->setResult(msg, false);
+            }
+            onRequestError(msg);
+            return;
+        }
+        // JSON invalide mais complet → on demande au modèle de réessayer.
+        const QString msg = QStringLiteral(
+            "Invalid JSON arguments: '%1'. Provide valid JSON, then retry.")
+            .arg(tc.arguments);
+        appendToolResult(tc, msg);
+        if (m_currentBubble) {
+            auto *tb = m_currentBubble->addToolBlock(tc.name);
+            tb->setParams(tc.arguments);
+            tb->setResult(msg, false);
+        }
+        executeToolCallsValidated(calls, index + 1);
+        return;
+    }
+
+    // (c) Cas nominal : tool connu + JSON valide.
+    const QJsonObject args = tc.parsedArgs();
+
+    // Sécurité — approval policy (mutations + paths sensibles + dangerous).
+    // Uniquement pour le terminal : on check la commande via checkApprovalRequired.
+    // Tout ce qui n'est pas lecture pure (ou qui touche une zone sensible) demande
+    // approbation. Si pas encore approuvé en session, on suspend la boucle et on
+    // demande l'approbation inline (bulle en cours).
+    if (tc.name == QLatin1String("terminal")) {
+        const QString cmd = args.value(QStringLiteral("command")).toString();
+        const QString reason = checkApprovalRequired(cmd);
+        if (!reason.isEmpty() && !m_sessionApprovedPatterns.contains(reason)) {
+            if (m_currentBubble) {
+                // Bloc tool en attente d'approbation + bandeau inline.
+                m_activeTool = m_currentBubble->addToolBlock(tc.name);
+                m_activeTool->setParams(tc.arguments);
+                m_activeTool->setStatus(QStringLiteral("\u26a0"));
+                m_currentBubble->showApproval(cmd, reason);
+                scrollToBottom();
+                scheduleBlurUpdate();
+                // Connexion one-shot : reprend la boucle au clic.
+                connect(m_currentBubble, &Bubble::approvalResult, this,
+                    [this, calls, index, reason](int choice) {
+                        const ToolCall &tc2 = calls.at(index);
+                        switch (choice) {
+                        case Bubble::AllowSession:
+                            m_sessionApprovedPatterns.insert(reason);
+                            if (m_currentBubble) m_currentBubble->clearApproval();
+                            executeToolCallNow(calls, index);
+                            break;
+                        case Bubble::AllowOnce:
+                            if (m_currentBubble) m_currentBubble->clearApproval();
+                            executeToolCallNow(calls, index);
+                            break;
+                        case Bubble::Deny: {
+                            const QString msg = QStringLiteral(
+                                "User denied this command requiring approval "
+                                "(matched '%1'). Do NOT retry this command - the "
+                                "user has explicitly rejected it.").arg(reason);
+                            appendToolResult(tc2, msg);
+                            if (m_activeTool)
+                                m_activeTool->setResult(msg, false);
+                            m_activeTool = nullptr;
+                            if (m_currentBubble) m_currentBubble->clearApproval();
+                            executeToolCallsValidated(calls, index + 1);
+                            break;
+                        }
+                        }
+                    }, Qt::SingleShotConnection);
+            }
+            return; // suspendu en attente d'approbation
+        }
+    }
+
+    executeToolCallNow(calls, index);
+}
+
+void ChatWidget::executeToolCallNow(const QList<ToolCall> &calls, int index)
+{
+    if (index >= calls.size()) {
+        m_client->sendMessages(m_messages);
+        return;
+    }
+    const ToolCall &tc = calls.at(index);
+    const QJsonObject args = tc.parsedArgs();
+
+    // Bloc tool (créé ici pour le chemin nominal ; le chemin approval a déjà
+    // pré-créé m_activeTool → on le réutilise pour ne pas dupliquer).
+    if (!m_activeTool && m_currentBubble)
+        m_activeTool = m_currentBubble->addToolBlock(tc.name);
+    if (m_activeTool) {
+        m_activeTool->setParams(tc.arguments);
+        m_activeTool->setStatus(QStringLiteral("\u23f3")); // running
+    }
+    scrollToBottom();
+    scheduleBlurUpdate();
+
+    // Tracker : si l'utilisateur appuie sur Stop pendant l'exec, onStopClicked
+    // utilise ces infos pour injecter un role="tool" "cancelled" coherent.
+    m_toolCallInProgressId = tc.id;
+    m_toolCallInProgressName = tc.name;
+    m_toolCallInProgressActive = true;
+
+    m_registry->execute(tc.name, args, [this, calls, index](bool ok, QString result) {
+        // Stop demande pendant l'exec : onStopClicked a deja injecte le
+        // role="tool" "cancelled" (si m_toolCallInProgressActive etait true).
+        // On finalise juste le visuel si ce n'etait pas deja fait, et on
+        // n'enchaîne SURTOUT pas sur le tool suivant.
+        if (m_interruptRequested) {
+            if (m_toolCallInProgressActive) {
+                // Le tool n'avait pas encore repond quand Stop a ete clique,
+                // mais onStopClicked n'a pas injecte (race rare) — on le fait
+                // ici pour rester coherent.
+                if (m_activeTool)
+                    m_activeTool->setResult(result, ok);
+                appendToolResult(calls.at(index), result);
+                m_activeTool = nullptr;
+                m_toolCallInProgressActive = false;
+                m_toolCallInProgressId.clear();
+                m_toolCallInProgressName.clear();
+            }
+            return;
+        }
+
+        if (m_activeTool)
+            m_activeTool->setResult(result, ok);
+
+        appendToolResult(calls.at(index), result);
+        m_activeTool = nullptr;
+        m_toolCallInProgressActive = false;
+        m_toolCallInProgressId.clear();
+        m_toolCallInProgressName.clear();
+
+        scrollToBottom();
+        scheduleBlurUpdate();
+
+        // Tool suivant (ou relance du client si dernier).
+        executeToolCallsValidated(calls, index + 1);
+    });
 }
 
 void ChatWidget::onRequestError(const QString &error)
 {
     qWarning() << "[a-ice] UI error:" << error;
-    if (m_currentBubble) {
-        // Affiche l'erreur dans la bulle en cours (zone contenu).
-        if (m_currentBubble->thinkingExpanded())
-            m_currentBubble->collapseThinking();
-        m_currentBubble->appendContent(QStringLiteral("⚠️ ") + error);
-    } else {
-        // Pas de bulle en cours : on en crée une dédiée.
+    if (!m_currentBubble)
         startAssistantBubble();
-        if (m_currentBubble)
-            m_currentBubble->appendContent(QStringLiteral("⚠️ ") + error);
+    clearWaitingBlock();
+    if (m_activeThinking) m_activeThinking->collapse();
+    if (m_currentBubble) {
+        auto *cb = m_currentBubble->addContentBlock();
+        cb->set(QStringLiteral("\u26a0\ufe0f ") + error);
     }
     m_isTyping = false;
     setGenerating(false);
     m_currentBubble = nullptr;
+    m_activeThinking = nullptr;
+    m_activeContent  = nullptr;
+    m_activeTool     = nullptr;
+    m_waitingBlock   = nullptr;
+    m_interruptRequested = false;
+    if (m_voice)
+        m_voice->stop();
     scheduleBlurUpdate();
 }
 
 void ChatWidget::scrollToBottom()
 {
+    // Auto-scroll conditionnel : on ne colle au bas que si l'utilisateur est
+    // déjà en bas (m_autoScroll). S'il a remonté pendant la génération, on le
+    // laisse lire tranquillement sans le renvoyer en bas à chaque chunk.
+    if (!m_autoScroll)
+        return;
+    // Force le layout du contenu à se recalculer (la bulle du bas vient de
+    // grandir) et propage la nouvelle hauteur au QScrollArea SYNCHRONE. Sans
+    // ça, setValue(maximum) utilise l'ancien maximum (layout pending) -> le
+    // viewport reste à l'ancienne position et coupe le bas des bulles -> effet
+    // accordéon (le texte disparaît une frame puis ré-expande au chunk suivant
+    // quand le maximum est enfin à jour).
+    if (auto *l = m_messagesContainer->layout())
+        l->activate();
+    const int vpW = m_scrollArea->viewport()->width();
+    const int contentH = qMax(m_scrollArea->viewport()->height(),
+                              m_messagesContainer->sizeHint().height());
+    m_messagesContainer->resize(vpW, contentH);
+    // Ceinture-bretelle : force le QScrollArea à recalculer sa scrollbar
+    // (updateScrollBars) synchrone au cas où le resize n'aurait pas suffi -
+    // sinon le maximum reste en retard et le scroll s'arrête au milieu de la
+    // dernière bulle.
+    QEvent lr(QEvent::LayoutRequest);
+    QCoreApplication::sendEvent(m_scrollArea, &lr);
     QScrollBar *bar = m_scrollArea->verticalScrollBar();
     bar->setValue(bar->maximum());
+}
+
+void ChatWidget::onScrollChanged()
+{
+    // Suivi de l'auto-scroll : si l'utilisateur est (revient) en bas, on
+    // réactive le suivi ; s'il remonte, on le désactive. Tolérance de 4 px
+    // (arrondis / step de la scrollbar). scrollToBottom() se charge du cas
+    // programme (value = maximum → reste activé), pas de boucle.
+    QScrollBar *bar = m_scrollArea->verticalScrollBar();
+    m_autoScroll = (bar->value() >= bar->maximum() - 4);
+}
+
+void ChatWidget::onScrollMoved()
+{
+    // Le scroll déplace les bulles en coords fenêtre : on repeint (paintEvent
+    // recalcule le blur avec la géométrie à jour au moment du paint). Plus de
+    // recalcul séparé en retard : le blur colle au contenu, scroll manuel ET
+    // auto-scroll pendant l'écriture.
+    update();
 }
 
 bool ChatWidget::eventFilter(QObject *watched, QEvent *event)

@@ -67,19 +67,44 @@ A-ICE lit un fichier de config JSON décrivant le provider et le modèle.
 
 ### Schéma
 
+A-ICE supporte un schéma **multi-providers / multi-modèles** : chaque provider
+(endpoint, prompt_format) contient ses propres modèles. Chaque modèle a un
+**alias** (raccourci pour `/model`) et un **name** (nom réel envoyé à l'API).
+La clé du modèle dans l'objet `models` est son alias.
+
+Chaque provider accepte une `api_key` optionnelle (ex: token Ollama Cloud),
+injectée en `Authorization: Bearer`. Un override global est possible via la
+variable d'environnement `AICE_API_KEY` (prioritaire sur la config).
+
+Chaque modèle accepte un `context_window` optionnel (fenêtre de contexte du
+modèle, en tokens) — utilisé par la commande `/context` pour estimer le
+reste avant le max. 0 ou absent = inconnu.
+
 ```json
 {
-  "provider": {
-    "name": "openai_compatible",
-    "api_url": "http://localhost:18081/v1",
-    "prompt_format": "qwen"
+  "providers": {
+    "local": {
+      "type": "openai_compatible",
+      "api_url": "http://localhost:18081/v1",
+      "prompt_format": "qwen",
+      "models": {
+        "qwen": {
+          "name": "qwen36-28b-reap",
+          "temperature": 0.7,
+          "max_tokens": 65536,
+          "stream": true
+        },
+        "glm": {
+          "name": "glm-5.2",
+          "temperature": 0.7,
+          "max_tokens": 65536,
+          "stream": true
+        }
+      }
+    }
   },
-  "model": {
-    "name": "qwen36-28b-reap",
-    "temperature": 0.7,
-    "max_tokens": 65536,
-    "stream": false
-  }
+  "default_provider": "local",
+  "default_model": "qwen"
 }
 ```
 
@@ -88,8 +113,44 @@ Un exemple est fourni dans `config.example.json` (aussi installé dans
 ses valeurs par défaut (modèle local `qwen36-28b-reap` sur
 `http://localhost:18081/v1`).
 
+Le schéma legacy (single `provider` + `model` au top-level) reste accepté :
+il est reconstruit comme un provider `default` avec un seul modèle.
+
 Par défaut, A-ICE appelle `${provider.api_url}/chat/completions` (endpoint
 OpenAI-compatible).
+
+### Switch de modèle à la volée
+
+Dans un chat, la commande `/model` change de modèle (et de provider si besoin)
+sans relancer l'app :
+
+- `/model` — affiche le modèle courant.
+- `/model glm` — bascule vers le modèle d'alias `glm` (recherche par alias en
+  priorité, fallback sur le nom complet `glm-5.2`).
+- `/models` — liste tous les modèles disponibles (le courant est marqué `*`).
+
+La sélection est repoussée au client (`model` + `api_url`) au prochain envoi.
+
+### Compaction du contexte (`/compact`)
+
+Quand la conversation s'allonge, `/compact` demande au LLM de produire un
+**résumé structuré** du contexte (objectifs, décisions/faits clés, derniers
+échanges, points en suspens), puis :
+
+1. injecte ce résumé en **system prompt, après le SOUL** (comme contexte
+   accumulé) pour les prochains messages ;
+2. **remplace l'historique** par le résumé (le contexte est compacté).
+
+Le fil naturel est préservé : le prompt de compaction exige la capture précise
+ des derniers échanges et des identifiants exacts (chemins, commandes, config,
+ nombres). `/new` repart de zéro et abandonne le résumé compacté.
+
+### Infos contexte (`/context`)
+
+`/context` affiche le modèle en cours + une **estimation** des tokens du
+contexte (system prompt + messages, heuristique chars/4) et, si `context_window`
+est configuré pour le modèle, la fenêtre max et ce qu'il reste. Pratique avant
+une `/compact` pour décider s'il faut compacter.
 
 ### SOUL.md — personnalité de l'agent
 
@@ -128,7 +189,42 @@ $EDITOR ~/.config/a-ice/SOUL.md
 
 ## Roadmap
 
+- [x] Streaming mode (server-sent events)
+- [x] Markdown rendering (user / assistant / thinking)
+- [x] SOUL.md system prompt
+- [x] Function calling (tools) — terminal, brave_search, fetch_url
 - [ ] Configuration GUI (adresse serveur, température, tokens max)
-- [ ] Support multi-modèle
-- [ ] Icône personnalisée
+- [x] Support multi-modèle (commande /model)
+- [x] Compaction du contexte (commande /compact)
+- [x] Infos contexte (commande /context)
+- [x] Icône personnalisée
 - [ ] Gestion du contexte (conversation longue)
+
+## Tools (function calling)
+
+A-Ice peut agir comme un agent : le modèle reçoit une liste d'outils
+(function-calling OpenAI-compatible) et peut les invoquer pendant sa
+réponse. Les résultats sont réinjectés en `role="tool"` et le modèle
+continue jusqu'à produire une réponse finale (max 8 itérations).
+
+Activation : `"tools": { "enabled": true }` dans `config.json`.
+
+### Outils fournis
+
+- **`terminal`** — exécute `bash -c <command>` dans le home de l'utilisateur
+  (ou `terminal_workdir` si défini). Timeout 30s par défaut (clamp 1s–120s).
+  Output combiné stdout+stderr tronqué à 20000 chars.
+- **`brave_search`** — recherche web via l'API Brave Search. Nécessite une
+  clé API : env var `BRAVE_API_KEY` (prioritaire) ou `tools.brave_api_key`
+  dans `config.json`. Retourne jusqu'à 20 résultats (title/url/snippet).
+- **`fetch_url`** — fetch une URL HTTP(S), convertit le HTML en markdown
+  via `QTextDocument` (zéro dépendance externe). Troncature 30000 chars.
+
+### Cycle function-calling
+
+```
+user → LLM → tool_calls → execute → role="tool" → LLM → réponse (ou re-tool)
+```
+
+Les appels sont affichés en direct dans la zone de réflexion (🔧 name(args)
+puis ✓ result-preview).

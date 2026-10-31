@@ -6,14 +6,23 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QList>
+#include <QSet>
 #include <QScopedPointer>
 #include <QTimer>
 #include <QString>
 #include "ChatMessage.h"
+#include "Config.h"
 
 class Bubble;
+class ThinkingBlock;
+class ToolBlock;
+class ContentBlock;
+class WaitingBlock;
 class LlamaClient;
 class Config;
+class ToolRegistry;
+class VoiceStream;
+struct ToolCall;
 
 /**
  * Overlay verre (glass) : pas de fenêtre classique.
@@ -39,6 +48,8 @@ public:
     QString getServerUrl() const;
     void setServerUrl(const QString &url);
     void applyConfig(const Config &config);
+    /// Refocus le prompt (apres retour de l overlay au premier plan).
+    void refocusPrompt();
 
 signals:
     void messageSent(const QString &text);
@@ -57,6 +68,11 @@ private slots:
     void onContentChunk(const QString &text);
     void onResponseComplete();
     void onRequestError(const QString &error);
+    void onToolCallsReady(const QList<ToolCall> &calls, const QString &assistantContent);
+    void onThinkingUpdated(const QString &cleanedThinking);
+    void onScrollChanged();
+    void onScrollMoved();  // scroll : recalcul blur synchrone (anti-décalage)
+    void onSummaryReady(const QString &summary);  // /compact : résumé reçu
 
 private:
     void setupUI();
@@ -64,19 +80,74 @@ private:
     void onSendMessage(const QString &text);
     void startAssistantBubble();
     void scrollToBottom();
+    /// Construit le ToolRegistry selon la config (si tools.enabled).
+    void setupTools(const Config &config);
+    /// Exécute séquentiellement une liste de tool_calls, avec validation
+    /// préalable (tool inconnu / JSON invalide / tronqué), puis relance le
+    /// client. Voir ROADMAP item 3.
+    void executeToolCallsValidated(const QList<ToolCall> &calls, int index);
+
+    /// Exécute réellement un tool_call validé (feedback bulle + registry->execute
+    /// + append du résultat + tool suivant). Factorisé pour partager entre le
+    /// chemin nominal et la reprise après approbation d'une commande dangerous.
+    void executeToolCallNow(const QList<ToolCall> &calls, int index);
+
+    /// Ajoute un message role="tool" à l'historique (résultat de tool).
+    /// Factorise l'injection des tool results (incl. cas d'erreur).
+    void appendToolResult(const ToolCall &tc, const QString &result);
 
     /// Bascule le bouton entre “envoyer” et “stop” pendant la génération.
     void setGenerating(bool generating);
 
+    /// Crée VoiceStream et le branche sur contentChunk/fin de tour/erreur.
+    void setupVoice();
+
+    /// Intercepte les commandes slash (/new, /help, /model, ...). Retourne true si la
+    /// saisie etait une commande (consommee, non envoyee au LLM), false sinon.
+    bool handleSlashCommand(const QString &text);
+
+    /// Commande /voice [on|off] : toggle par défaut. Off = stop immédiat
+    /// (son + génération). Retourne true (commande consommée).
+    bool handleVoiceCommand(const QString &arg);
+
+    /// Bascule le modèle courant vers `aliasOrName` (commande /model). Affiche
+    /// un retour utilisateur (succès/échec) dans une bulle système et pousse la
+    /// nouvelle config au client. Retourne true si le switch a réussi.
+    bool switchModelCommand(const QString &aliasOrName);
+
+    /// Demande au LLM un résumé du contexte courant (commande /compact) : envoie
+    /// le prompt de compaction + l'historique, puis injecte le résumé en
+    /// system prompt (après le SOUL) et remplace l'historique par le résumé.
+    void compactConversation();
+
+    /// Affiche une note système (bulle assistant avec un content block, pas de
+    /// streaming) — utilisé par /compact pour le retour compaction.
+    void showSystemNote(const QString &text);
+
+    /// Affiche les infos de contexte (commande /context) : modèle en cours,
+    /// tokens estimés du contexte, fenêtre max et reste.
+    void showContextInfo();
+
+    /// Reinitialise la conversation : historique API, bulles, etat des blocs,
+    /// approvals session. Utilise par /new.
+    void resetConversation();
+
+    /// Retire le placeholder d'attente (des qu'un vrai bloc arrive).
+    void clearWaitingBlock();
+
     /// Recalcule et applique la region blur KWin (union bulles + barre).
-    void updateBlurRegion();
-    /// Re-planifie un recalcul de blur (throttled).
+    /// SANS repaint : appelée dans paintEvent (géométrie à jour, commit à la
+    /// frame courante) pour synchroniser le blur avec le contenu affiché.
+    void applyBlurRegion();
+    /// Re-planifie un repaint (le blur est recalculé dans paintEvent).
     void scheduleBlurUpdate();
 
     /// Region blur/mask actuelle (pour ne rien reapply si inchangée → anti-clignote).
     QRegion m_lastRegion;
 
     QScopedPointer<LlamaClient> m_client;
+    QScopedPointer<ToolRegistry> m_registry;
+    QScopedPointer<VoiceStream> m_voice;   // streaming TTS (/voice)
     QScrollArea *m_scrollArea = nullptr;
     QWidget    *m_messagesContainer = nullptr;
     QVBoxLayout *m_messagesLayout = nullptr;
@@ -87,10 +158,25 @@ private:
 
     // Bulle assistant en cours de génération.
     Bubble *m_currentBubble = nullptr;
-    QString m_currentContent; // contenu de la réponse en cours (pour l'historique)
-
-    QTimer m_blurTimer;
+    // Blocs actifs du tour en cours (dans la carte courante). Un tour = un
+    // sendMessages ; une nouvelle phase de thinking/content crée un nouveau
+    // bloc dans la MÊME carte. Voir ROADMAP item 6 (révisé : une carte + blocs).
+    ThinkingBlock *m_activeThinking = nullptr;
+    ContentBlock  *m_activeContent  = nullptr;
+    ToolBlock     *m_activeTool     = nullptr;
+    WaitingBlock  *m_waitingBlock   = nullptr;  // placeholder avant 1er chunk
+    QString m_currentContent; // contenu de la réponse en cours (pour l'historique API)
 
     bool m_isTyping = false;
+    bool m_autoScroll = true;  // suivi auto : on ne scolle que si l'utilisateur est en bas
+    int m_lastCompactTokensAvant = -1;  // tokens avant dernier /compact (pour afficher la réduction)
+    int m_toolIterations = 0;
+    int m_maxToolIterations = 8; // limite anti-boucle, config via tools.max_tool_iterations
+    bool m_interruptRequested = false;        // bouton Stop pendant exec tools
+    QString m_toolCallInProgressId;           // tool_call_id en cours (pour inject "cancelled")
+    QString m_toolCallInProgressName;
+    bool m_toolCallInProgressActive = false;
     QList<ChatMessage> m_messages;
+    QSet<QString> m_sessionApprovedPatterns; // dangerous patterns approuvés pour la session
+    Config m_config; // copie de la config (mutable localement pour switchModel)
 };

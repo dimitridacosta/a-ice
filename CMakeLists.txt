@@ -8,8 +8,8 @@ set(CMAKE_AUTOMOC ON)
 # KF6 / Qt6 (Plasma 6 / Bazzite)
 find_package(ECM REQUIRED NO_MODULE PATHS /usr/share/ECM/cmake)
 list(APPEND CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
-find_package(KF6 REQUIRED COMPONENTS WindowSystem)
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+find_package(KF6 REQUIRED COMPONENTS WindowSystem GlobalAccel)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Test)
 find_package(LayerShellQt CONFIG REQUIRED)
 
 # Activer MOC/AUTORCC pour Qt6.
@@ -21,6 +21,7 @@ add_executable(a-ice
     src/AiceApplet.h
     src/AiceApplet.cpp
     src/ChatMessage.h
+    src/ChatMessage.cpp
     src/ChatWidget.h
     src/ChatWidget.cpp
     src/Bubble.h
@@ -29,10 +30,24 @@ add_executable(a-ice
     src/llama_client.cpp
     src/Config.h
     src/Config.cpp
+    src/Tool.h
+    src/ToolRegistry.h
+    src/ToolRegistry.cpp
+    src/tools/TerminalTool.h
+    src/tools/TerminalTool.cpp
+    src/tools/TerminalSafety.h
+    src/tools/TerminalSafety.cpp
+    src/tools/BraveSearchTool.h
+    src/tools/BraveSearchTool.cpp
+    src/tools/WebFetchTool.h
+    src/tools/WebFetchTool.cpp
+    src/voice/VoiceStream.h
+    src/voice/VoiceStream.cpp
 )
 
 target_link_libraries(a-ice
     KF6::WindowSystem
+    KF6::GlobalAccel
     LayerShellQt::Interface
     Qt6::Widgets
     Qt6::Network
@@ -46,3 +61,41 @@ add_subdirectory(poc)
 install(FILES metadata.xml aice.desktop DESTINATION share/plasma/quickapplets/a-ice)
 install(FILES metadata.xml aice.desktop DESTINATION share/plasma/services)
 install(FILES config.example.json SOUL.example.md DESTINATION share/a-ice)
+
+# --- Test unitaire hardline -------------------------------------------------
+# Link uniquement TerminalSafety.cpp + Qt6::Core : le terminal (QProcess) n'est
+# JAMAIS compile dans ce test -> physiquement incapable d'executer une commande.
+add_executable(test_hardline
+    tests/test_hardline.cpp
+    src/tools/TerminalSafety.h
+    src/tools/TerminalSafety.cpp
+)
+target_link_libraries(test_hardline PRIVATE Qt6::Core)
+
+# --- Test unitaire ChatMessage (repair historique, item 7) -------------
+# Link uniquement ChatMessage.cpp + Qt6::Core. Aucun terminal, aucun réseau.
+add_executable(test_chatmessage
+    tests/test_chatmessage.cpp
+    src/ChatMessage.h
+    src/ChatMessage.cpp
+)
+target_link_libraries(test_chatmessage PRIVATE Qt6::Core)
+
+# --- Test unitaire Config (multi-providers + switchModel) --------------
+# Link uniquement Config.cpp + Qt6::Core. Aucun terminal, aucun réseau.
+add_executable(test_config
+    tests/test_config.cpp
+    src/Config.h
+    src/Config.cpp
+)
+target_link_libraries(test_config PRIVATE Qt6::Core)
+
+# --- Test unitaire VoiceStream (chunker adaptatif, sans réseau) -------------
+# Link VoiceStream.cpp + Qt6::Core. Le socket n'est pas connecté dans le test :
+# on vérifie états, buffer, statusLine (aucun envoi réel).
+add_executable(test_voicestream
+    tests/test_voicestream.cpp
+    src/voice/VoiceStream.h
+    src/voice/VoiceStream.cpp
+)
+target_link_libraries(test_voicestream PRIVATE Qt6::Core Qt6::Network Qt6::Test)
