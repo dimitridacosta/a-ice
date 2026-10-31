@@ -45,25 +45,29 @@ Window {
     flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
 
     /*
-     * Ombre de carte : l'effet d'ombre fourni par Qt, pose sur la carte elle-meme.
-     * Qt la construit a partir de l'alpha de la carte (donc de ses coins arrondis)
-     * et laisse automatiquement la place au degrade autour (autoPaddingEnabled).
+     * Ombre de carte : l'effet d'ombre fourni par Qt, pose sur la matiere de la
+     * carte (le fond, pas son contenu). Qt la construit a partir de ce que contient
+     * le layer — donc de la forme et de ses coins arrondis — et laisse automatiquement
+     * la place au degrade autour (autoPaddingEnabled).
      *
-     * C'est ce qui manquait a un rectangle fonce simplement floute : son flou est
-     * rogne aux bords de sa propre texture, donc le degrade n'existe pas et
-     * l'ombre rend en dur, en plus d'etre placee a la main carte par carte.
+     * Le layer ne contient QUE la matiere : si le texte y entrait, chaque glyphe
+     * heriterait de sa propre ombre (c'est ce qui se passait au debut).
      *
      * Le layer n'est active que si l'ombre est active : le lien « ombre » du badge
      * mesure ainsi le cout reel (un rendu en deux passes par carte).
      */
     component CardShadow: MultiEffect {
-        property real intensity: 0.9      // 0 = pas d'ombre
-        property real softness: 0.45      // epaisseur du degrade (fraction du flou max)
-        property int maxBlur: 40
-        property int drop: 8              // devers vers le bas : la carte flotte
+        property real intensity: 0.8      // 0 = pas d'ombre
+        property real softness: 0.38      // epaisseur du degrade (fraction du flou max)
+        property int maxBlur: 30
+        property int drop: 7              // devers vers le bas : la carte flotte
+        // Ombre bleutee, pas noire : un bleu profond, pas un bleu eclaire.
+        // L'ombre se voit aussi a travers la carte translucide : un bleu trop
+        // lumineux ou un halo trop large coloreraient toute la fenetre.
+        property color tint: Qt.rgba(0.07, 0.24, 0.62, 1.0)
 
         shadowEnabled: intensity > 0
-        shadowColor: Qt.rgba(0, 0, 0, 1)
+        shadowColor: tint
         shadowOpacity: intensity
         shadowBlur: softness
         blurMax: maxBlur
@@ -158,7 +162,7 @@ Window {
             onHeightChanged: glass.scheduleRefresh()
             onVisibleChanged: glass.scheduleRefresh()
 
-            Rectangle {
+            Item {
                 id: card
 
                 // C'est cette carte (et pas la fenetre) qui definit le verre :
@@ -166,23 +170,28 @@ Window {
                 property bool glassCard: true
                 property int glassRadius: win.cardRadius
 
-                // L'ombre porte la carte elle-meme : rien a placer a la main.
-                // (autoPaddingEnabled, dans CardShadow, remplace l'ancien
-                // layer.transparentBorder, parti en Qt 6.11.)
-                layer.enabled: win.shadowOn
-                layer.samples: 4
-                layer.effect: CardShadow {}
-
-                radius: win.cardRadius
-                color: cell.agent ? win.agentCard : win.userCard
-                border.color: win.cardBorder
-                border.width: 1
-
                 // Carte agent : pleine largeur. Carte user : épouse son texte.
                 width: cell.agent ? (cell.width - 2 * win.halo)
                                   : Math.min(cell.width - 2 * win.halo, natural.width + 34)
                 height: body.implicitHeight + 26
                 x: cell.agent ? win.halo : (cell.width - win.halo - width)
+
+                // La matiere de la carte, unique source de l'ombre. L'effet de Qt
+                // fabrique l'ombre a partir de ce que le layer contient : en laissant
+                // le texte hors du layer, chaque glyphe ne herite pas d'une ombre a lui.
+                Rectangle {
+                    id: cardFill
+
+                    anchors.fill: parent
+                    radius: win.cardRadius
+                    color: cell.agent ? win.agentCard : win.userCard
+                    border.color: win.cardBorder
+                    border.width: 1
+
+                    layer.enabled: win.shadowOn
+                    layer.samples: 4
+                    layer.effect: CardShadow {}
+                }
 
                 Text {
                     id: body
@@ -213,15 +222,11 @@ Window {
 
     /* ------------------------------------------------ barre de prompt (grab) */
 
-    Rectangle {
+    Item {
         id: pill
 
         property bool glassCard: true
         property int glassRadius: win.barRadius
-
-        layer.enabled: win.shadowOn
-        layer.samples: 4
-        layer.effect: CardShadow { drop: 10 }
 
         anchors.left: parent.left
         anchors.right: parent.right
@@ -230,14 +235,26 @@ Window {
         anchors.rightMargin: 20
         anchors.bottomMargin: 18
 
-        radius: win.barRadius
-        color: win.barFill
-        border.color: win.barBorder
-        border.width: 1
         height: Math.max(52, promptArea.implicitHeight + 24)
 
         onYChanged: glass.scheduleRefresh()
         onHeightChanged: glass.scheduleRefresh()
+
+        // La matiere de la barre, seule source de l'ombre : le texte saisi et le
+        // bouton ne doivent pas heriter d'une ombre chacun.
+        Rectangle {
+            id: pillFill
+
+            anchors.fill: parent
+            radius: win.barRadius
+            color: win.barFill
+            border.color: win.barBorder
+            border.width: 1
+
+            layer.enabled: win.shadowOn
+            layer.samples: 4
+            layer.effect: CardShadow { drop: 10 }
+        }
 
         // Saisie de la fenetre : le geste natif du composeur si il le sait faire,
         // sinon deplacement par deltas successifs (fallback composeurs prudents).
@@ -355,15 +372,11 @@ Window {
 
     /* ------------------------------------------------- badge de mesure (HUD) */
 
-    Rectangle {
+    Item {
         id: hud
 
         property bool glassCard: true
         property int glassRadius: win.hudRadius
-
-        layer.enabled: win.shadowOn
-        layer.samples: 4
-        layer.effect: CardShadow { intensity: 0.7; drop: 6 }
 
         visible: glass.hud
         anchors.top: parent.top
@@ -371,12 +384,22 @@ Window {
         anchors.rightMargin: 20
         anchors.topMargin: 20
 
-        radius: win.hudRadius
-        color: "#3C222228"
-        border.color: "#1AFFFFFF"
-        border.width: 1
         width: hudCol.implicitWidth + 20
         height: hudCol.implicitHeight + 14
+
+        Rectangle {
+            id: hudFill
+
+            anchors.fill: parent
+            radius: win.hudRadius
+            color: "#3C222228"
+            border.color: "#1AFFFFFF"
+            border.width: 1
+
+            layer.enabled: win.shadowOn
+            layer.samples: 4
+            layer.effect: CardShadow { intensity: 0.7; drop: 6 }
+        }
 
         Column {
             id: hudCol
