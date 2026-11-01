@@ -57,10 +57,10 @@ Window {
      * mesure ainsi le cout reel (un rendu en deux passes par carte).
      */
     component CardShadow: MultiEffect {
-        property real intensity: 0.8      // 0 = pas d'ombre
-        property real softness: 0.7       // epaisseur du degrade (fraction du flou max)
-        property int maxBlur: 40          // 28 px de halo : l'ombre est diffuse
-        property int drop: 10             // devers vers le bas : la carte flotte
+        property real intensity: 0.6      // 0 = pas d'ombre : moins opaque, l'ombre est de l'air
+        property real softness: 0.85      // epaisseur du degrade (fraction du flou max)
+        property int maxBlur: 50          // 42 px de halo : l'ombre monte plus haut, plus diffuse
+        property int drop: 14             // devers vers le bas : la carte flotte
         /*
          * Ombre NOIRE, pas bleue. L'ombre est dessinee DERRIERE la carte, qui est
          * translucide : une ombre bleue se voit donc a travers la carte, et toute
@@ -255,7 +255,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { drop: 12 }
+            layer.effect: CardShadow { drop: 18 }
         }
 
         // Saisie de la fenetre : le geste natif du composeur si il le sait faire,
@@ -410,7 +410,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { intensity: 0.7; drop: 8 }
+            layer.effect: CardShadow { intensity: 0.5; drop: 12 }
         }
 
         Column {
@@ -500,7 +500,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { intensity: 0.7; drop: 8 }
+            layer.effect: CardShadow { intensity: 0.5; drop: 12 }
         }
 
         Column {
@@ -564,7 +564,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { intensity: 0.7; drop: 8 }
+            layer.effect: CardShadow { intensity: 0.5; drop: 12 }
         }
 
         Column {

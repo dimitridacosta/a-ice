@@ -173,17 +173,17 @@ L'ombre est réglée à l'œil sur capture (`CardShadow`) :
 | Reglage | Valeur | Pourquoi |
 | --- | --- | --- |
 | `tint` | `Qt.rgba(0, 0, 0, 1.0)` | **noir** : l'ombre est dessinee DERRIERE la carte, qui est translucide — une ombre bleue se voit a travers la carte, et c'est toute la carte qui parait bleutee (bien plus que l'ombre elle-meme) |
-| `intensity` | 0,8 | l'ombre ne herite que de l'alpha de la carte (0,43 pour la barre) |
-| `softness` | 0,7 | 70 % du flou max : l'ombre est voulue diffuse |
-| `maxBlur` | 40 px | 28 px de halo : la penombre s'etale sur ~25 px sous la carte, ~12 px sur les cotes |
-| `drop` | 10 px (12 pour la barre, 8 pour le badge et la carte du hub) | la carte flotte |
+| `intensity` | 0,6 | moins opaque : l'ombre est de l'air, pas une plaque. Elle ne depasse de toute facon jamais l'alpha de la carte qui la porte (0,43 pour la barre) |
+| `softness` | 0,85 | 85 % du flou max : le degrade s'etale, l'ombre est diffuse |
+| `maxBlur` | 50 px | 42 px de halo : la penombre monte loin autour de la carte |
+| `drop` | 14 px (18 pour la barre, 12 pour le badge, la carte du hub et la carte d'autorisation) | la carte flotte |
 
 Ces reglages se sont corriges a la mesure, pas a l'ceil : le ratio `B/R` de la
 penombre doit coller a celui du fond (1,20 ici) — des qu'il monte (1,6, puis 1,9
 quand l'ombre etait bleutee saturee), l'ombre colore la scene au lieu de la poser.
-Et le cout : a 2 000 bulles, 12 cartes de verre, 6,0 ms sans ombre, **7,7-9,7 ms
-avec l'ombre diffuse** (contre ~6,7 avec un halo de 11 px) — c'est `maxBlur` qui
-coute, pas `intensity`.
+Et le cout : a 2 000 bulles, 12 cartes de verre, 6,0 ms sans ombre, **6,4-9,7 ms
+avec** selon l'etape du calcul (un halo de 11 px coutait ~0,7 ms) — c'est `maxBlur`
+qui coute, pas `intensity`.
 
 Et surtout : **une ombre est calculée à partir de ce que contient le layer**. Les
 cartes sont donc des conteneurs (`Item`, qui porte `glassCard` et le rayon de verre)
@@ -201,7 +201,7 @@ heritait de sa propre ombre : un halo sombre sous les lettres.
    l'assumer (le drag devient moins fluide).
 3. **`AICE_LAYER=1`** : overlay sans ancre, au-dessus de tout, sans tâche dans le
    panel. Le chemin layer-shell est écrit mais n'a pas été essayé en conditions réelles.
-4. **Le gout de l'ombre** (noire, intensité 0,8, flou 40 px, halo 70 %, dévers 10 px) et du fade (90 px) au toucher, et le scroll à 2 000 bulles. Ces
+4. **Le gout de l'ombre** (noire, intensité 0,6, flou 50 px, halo 85 %, dévers 14 px) et du fade (90 px) au toucher, et le scroll à 2 000 bulles. Ces
    réglages sont discutables — `CardShadow` est un composant unique, ils se changent
    là, et `AICE_SHADOW=0` permet de comparer avec/sans en direct.
 5. La persistance de position : relancer et vérifier que la fenêtre se remet où elle
@@ -222,9 +222,9 @@ heritait de sa propre ombre : un halo sombre sous les lettres.
 - **Une ombre colore la carte, pas seulement le fond** : l'ombre est dessinee sous
   la carte translucide, donc on la voit a travers elle. Une ombre bleue, meme reglee,
   fait une carte bleutee : pour garder le verre dans sa teinte a lui, l'ombre est noire.
-- **Le chantage de `maxBlur`** : un halo diffus (40 px de flou max) est joli mais
-  c'est lui qui coute le plus de GPU (6,0 → 7,7-9,7 ms a 2 000 bulles). Si un jour
-  ca derive, on coupe `maxBlur` en premier, pas `intensity`.
+- **Le chantage de `maxBlur`** : un halo diffus (50 px de flou max) est joli mais
+c'est lui qui coute le plus de GPU (6,0 → 6,4-9,7 ms a 2 000 bulles). Si un jour
+cela derive, on coupe `maxBlur` en premier, pas `intensity`.
 - **Halo plus large que le devers = liseré lumineux** : si le flou (11 px ici) est
   plus epais que le devers (11 px aussi), l'ombre entoure la carte de partout et
   rend une aura, pas une ombre posee dessous.
