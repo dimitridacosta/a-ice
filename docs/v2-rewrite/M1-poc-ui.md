@@ -120,7 +120,9 @@ Stress réel sur l'écran Wayland (KDE/Bazzite), 2 000 bulles, redraw continu, 8
   carte coupée en haut de la zone est à `alpha 0,25` et les cartes entièrement sorties
   sont écartées du verre.
 - Empilement vérifié à la mesure — proportions de la v1 (voir la section
-  « Proportions ») : cartes agent pleine largeur (`776 @ x=12`), carte user plus
+  « Proportions ») : carte agent `776 @ x=12` à l'époque où elle était forcée à la
+  pleine largeur (aujourd'hui elle épouse son texte, comme la carte user), carte user
+  plus
   petite alignée à droite (`383 @ x=405`, bord droit à 12 px de la fenêtre), barre
   `776x46 @ 12,735`, y des bulles 265, 173, 81, 17, espacement de 12 px entre les
   **faces** des cartes. Les bulles sont bien **ancrées en bas**, les anciennes montent.
@@ -227,10 +229,10 @@ Application dans le POC (`poc/qml/Main.qml`) :
 | `halo` (air autour de la carte) | 12 | **4** | = `kGlassInset` ; les cartes sont donc à 12 px des côtés |
 | `spacing` des bulles | 6 | **12** | ici la carte EST la bulle : l'espacement porte seul les 12 px d'air |
 | marges haute/basse de la zone | 0 / 6 | **17 / 22** | faces des cartes alignées sur la v1 |
-| texte de carte | `x 16, y 13`, hauteur = texte + 26 | `x 16, y 12`, hauteur = texte + **24** | `hPad 32`, `vPad 24` de la v1 |
-| carte user | texte + 34 | texte + **32** | idem |
+| texte de carte | `x 16, y 13`, hauteur = texte + 26 | `x **12**, y **8**, hauteur = texte + **16** | plus étroit que la v1 (16 / 12) : c'est voulu, une bulle d'une ligne doit être très petite |
+| carte user | texte + 34 | largeur = texte + **24**, plafonnée à la zone | idem : les deux rôles épousent leur texte |
 | barre | marges 20 / 20 / 18, hauteur `max(52, …+24)` | marges **12 / 12 / 19**, hauteur `max(46, …+28)` | 46 = 30 de saisie + 8 + 8 ; 12 = 8 + 4 |
-| contenu de la barre | marges 12 / 10 / 8 / 8, poignée de 18 | marges **6 / 10 / 8 / 8**, poignée de **12** | la saisie commence à 18 px du bord, comme en v1 |
+| contenu de la barre | marges 12 / 10 / 8 / 8, poignée de 18 | marges **12 / 10 / 8 / 8**, plus de poignée visible | la saisie est à 12 px du bord, comme le texte des cartes |
 
 Capture de contrôle à l'appui (`poc/shots/`), et dump `AICE_DEBUG=1` :
 `776x80 @ 12,81`, `776x46 @ 12,735` (barre), carte user `383x43 @ 405,376` — les
@@ -254,11 +256,12 @@ Deux choses donnaient au v1 son effet « resserré léger », et il manquait au 
   fenêtre — dans une fenêtre de 800 px, une réponse de deux lignes devenait une
   carte géante.
 
-Correction : **les deux rôles épousent leur texte** (largeur = texte + 32, plafonnée
+Correction : **les deux rôles épousent leur texte** (largeur = texte + 24, plafonnée
 à la largeur de la zone). Mesuré à la sonde, police Ubuntu 13 px, en comparant avec
-la largeur réelle du texte : « bonjour » (46 px de texte) → carte **78 px** ;
-phrase d'une ligne (352 px) → carte **384 px** ; hauteur d'une carte d'une ligne =
-**42,75 px**. Les cartes agent restent alignées à gauche, les cartes user à droite.
+la largeur réelle du texte : « bonjour » (46 px de texte) → carte **70,2 px** ;
+« oii » → **38,2 px** ; phrase d'une ligne (352 px) → carte **376,4 px** ; hauteur
+d'une carte d'une ligne = **34,75 px** (78 × 42,75 avec le padding précédent). Les
+cartes agent restent alignées à gauche, les cartes user à droite.
 
 `--size 460x800` reproduit la colonne du v1 : capture `ub460` — la conversation
 prend le même air que dans l'applet.
@@ -270,8 +273,10 @@ il est visible (`anchors.topMargin: glass.hud ? hud.height + 28 : 20`).
 ## La poignée de redimensionnement
 
 `resizeEdge` : un `Item` de 10 px collé au bord droit de la barre, sur toute sa
-hauteur, avec un `MouseArea` (curseur `SizeFDiagCursor`) et un fin repère visuel
-qui grandit au survol. Les 10 px sont exactement la marge de droite du contenu de
+hauteur, avec un `MouseArea` (curseur `SizeFDiagCursor`). Il n'y a **aucun repère
+visible** : la zone existe pour le geste, et le geste s'annonce seulement par le
+changement de curseur (côté gauche de la barre, `pillDrag` garde `SizeAllCursor`
+pour déplacer la fenêtre). Les 10 px sont exactement la marge de droite du contenu de
 la barre : la poignée ne recouvre pas le bouton d'envoi.
 
 - Côté C++ : `GlassHelper::startResize(int edges)` =
@@ -285,6 +290,8 @@ la barre : la poignée ne recouvre pas le bouton d'envoi.
 - Minimum posé côté fenêtre : `minimumWidth 320`, `minimumHeight 380` (en dessous,
   la barre de 46 px et une carte ne tiennent plus).
 - La taille n'est **pas** persistée dans `QSettings` : seule la position l'est.
+- Les deux points qui servaient de « prise » à gauche de la barre ont été supprimés
+  pour la même raison : la barre se saisit partout, le curseur suffit à le dire.
 
 Deux pièges ont été évités d'emblée, ils sont repris plus bas dans « Pièges ».
 

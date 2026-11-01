@@ -207,13 +207,12 @@ Window {
                 property bool glassCard: true
                 property int glassRadius: win.cardRadius
 
-                // Carte agent : pleine largeur. Carte user : épouse son texte.
-                // Les deux roles epousent leur texte. La v1 etait une colonne de
-                // 460 px : une reponse courte donnait une carte courte, d'ou
-                // l'effet « serre leger ». Ici la carte ne prend pleine largeur que
-                // quand le texte la remplit.
-                width: Math.min(cell.width - 2 * win.halo, natural.width + 32)
-                height: body.implicitHeight + 24   // v1 : 12 px en haut, 12 px en bas
+                // Les deux roles epousent leur texte (la v1 etait une colonne de
+                // 460 px : une reponse courte donnait une carte courte), et le
+                // padding est le plus etroit possible : 12 px sur les cotes, 8 px en
+                // haut et en bas. Une bulle d'une seule ligne est donc tres petite.
+                width: Math.min(cell.width - 2 * win.halo, natural.width + 24)
+                height: body.implicitHeight + 16
                 x: cell.agent ? win.halo : (cell.width - win.halo - width)
 
                 // La matiere de la carte, unique source de l'ombre. L'effet de Qt
@@ -235,9 +234,9 @@ Window {
 
                 Text {
                     id: body
-                    x: 16
-                    y: 12
-                    width: parent.width - 32
+                    x: 12
+                    y: 8
+                    width: parent.width - 24
                     text: cell.text
                     color: win.ink
                     font.family: win.uiFont
@@ -330,28 +329,10 @@ Window {
         Item {
             id: pillRow
             anchors.fill: parent
-            anchors.leftMargin: 6
+            anchors.leftMargin: 12
             anchors.rightMargin: 10
             anchors.topMargin: 8
             anchors.bottomMargin: 8
-
-            // Poignee visible : ce qui se voit se saisit. Elle tient dans la marge
-            // de gauche pour que la saisie commence a 18 px du bord de la barre,
-            // comme en v1.
-            Item {
-                id: grip
-                anchors.left: parent.left
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                width: 12
-                Text {
-                    anchors.centerIn: parent
-                    text: "\u2806"
-                    color: "#70e9eaee"
-                    font.family: win.uiFont
-                    font.pixelSize: 15
-                }
-            }
 
             Rectangle {
                 id: sendBtn
@@ -379,7 +360,7 @@ Window {
 
             TextEdit {
                 id: promptArea
-                anchors.left: grip.right
+                anchors.left: parent.left
                 anchors.right: sendBtn.left
                 anchors.verticalCenter: parent.verticalCenter
                 text: ""
@@ -442,20 +423,9 @@ Window {
             anchors.bottom: parent.bottom
             width: 10
 
-            // Ce qui se voit se saisit : un fin repere au bord, qui grandit au survol.
-            Rectangle {
-                id: resizeTick
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.right: parent.right
-                anchors.rightMargin: 3
-                width: 3
-                height: edgeArea.containsMouse ? 30 : 18
-                radius: 2
-                color: edgeArea.containsMouse ? "#C8ffffff" : "#45ffffff"
-                Behavior on height { NumberAnimation { duration: 120 } }
-                Behavior on color { ColorAnimation { duration: 120 } }
-            }
-
+            // Pas de repere visible : seule la zone de saisie du geste compte. Le
+            // geste s'annonce par le curseur — SizeFDiagCursor ici, SizeAllCursor
+            // sur le reste de la barre.
             MouseArea {
                 id: edgeArea
                 anchors.fill: parent
@@ -535,7 +505,7 @@ Window {
         anchors.bottomMargin: 16
 
         width: Math.min(win.width - 2 * win.inset, 470)
-        height: permCol.height + 24
+        height: permCol.height + 16
 
         onYChanged: glass.scheduleRefresh()
         onHeightChanged: glass.scheduleRefresh()
@@ -557,10 +527,10 @@ Window {
 
         Column {
             id: permCol
-            x: 16
-            y: 12
+            x: 12
+            y: 8
             spacing: 7
-            width: permCard.width - 32
+            width: permCard.width - 24
 
             Text {
                 width: permCol.width
