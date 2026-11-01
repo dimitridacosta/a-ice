@@ -135,6 +135,119 @@ HubClient::HubClient(QObject *parent)
     });
 }
 
+// --- la carte du hub, liste d'ouvreurs (M3) ----------------------------------
+
+/*
+ * Les sessions vivantes du hub, toutes instances : sessionId, titre, status et
+ * workspace de chacune, pour la liste cliquable de la carte. Ce n'est pas une
+ * condition de la jonction : un echec laisse la carte telle quelle.
+ */
+void HubClient::listSessions()
+{
+    if (hubHttpBase.isEmpty() || token.isEmpty())
+        return;
+
+    QNetworkRequest req(QUrl(hubHttpBase + QStringLiteral("/api/instances")));
+    req.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
+
+    QNetworkReply *reply = net->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            setStatus(QStringLiteral("liste des sessions : ") + reply->errorString());
+            return;
+        }
+
+        QVariantList rows;
+        const QJsonArray list = QJsonDocument::fromJson(reply->readAll()).array();
+        for (const QJsonValue value : list) {
+            const QJsonObject entry = value.toObject();
+            const QString workspacePath = entry.value(QStringLiteral("workspace")).toString();
+            const QString workspaceName = QFileInfo(workspacePath).fileName();
+            const QString instanceStatus = entry.value(QStringLiteral("status")).toString();
+            for (const QJsonValue session : entry.value(QStringLiteral("sessions")).toArray()) {
+                const QJsonObject one = session.toObject();
+                if (one.value(QStringLiteral("sessionId")).toString().isEmpty())
+                    continue;
+                QVariantMap row;
+                row.insert(QStringLiteral("sessionId"),
+                           one.value(QStringLiteral("sessionId")).toString());
+                row.insert(QStringLiteral("title"),
+                           one.value(QStringLiteral("title")).toString());
+                // Sans titre pose par le backend, l'identifiant raccourci fait l'affaire.
+                row.insert(QStringLiteral("state"),
+                           one.value(QStringLiteral("status")).toString(instanceStatus));
+                row.insert(QStringLiteral("workspace"), workspaceName);
+                row.insert(QStringLiteral("workspacePath"), workspacePath);
+                rows.append(row);
+            }
+        }
+
+        sessionsValue = rows;
+        emit sessionsChanged();
+    });
+}
+
+/*
+ * Faire parler une autre session du hub : meme instance, on session/load en
+ * place (l'historique rejoue, comme a la reprise d'un lancement) ; autre
+ * instance, on rejoint son pont avant de charger. Dans les deux cas, le modele
+ * de bulles est vide par historyReset() — l'historique rejoue vient d'ailleurs.
+ */
+void HubClient::openSession(const QString &sessionId, const QString &workspacePath)
+{
+    if (sessionId.isEmpty())
+        return;
+    if (sessionId == sessionIdValue)   // deja la notre, rien a faire
+        return;
+
+    emit historyReset();
+    setGenerating(false);
+    retryPromptText.clear();
+    promptRecoveries = 0;
+
+    const QString canonical = QDir(workspacePath).canonicalPath();
+    openWorkspacePath = canonical.isEmpty() ? workspacePath : canonical;
+
+    if (openWorkspacePath.isEmpty() || openWorkspacePath == workspace) {
+        sessionIdValue = sessionId;
+        resumed = true;
+        emit resumedChanged();
+        setStatus(QStringLiteral("ouverture de la session %1…").arg(shortId(sessionId)));
+        rpcSend(QStringLiteral("session/load"),
+                QJsonObject{{QStringLiteral("sessionId"), sessionId},
+                            {QStringLiteral("cwd"), workspace},
+                            {QStringLiteral("mcpServers"), QJsonArray{}}},
+                false);
+        return;
+    }
+
+    // Une autre cerveau du hub : le pont est posé par instance, il faut une
+    // nouvelle jonction. PendingOpenSession pilote la suite ( voir startSession) ;
+    // la session gardee de l'autre workspace n'est pas ecrasee ici — un tour vecu
+    // la remplacera (endTurn → rememberSession).
+    pendingOpenSession = sessionId;
+    cliWorkspace = openWorkspacePath;
+    workspace = openWorkspacePath;
+    QSettings settings;
+    settings.setValue(QStringLiteral("hub/workspace"), openWorkspacePath);
+
+    voluntaryClose = true;
+    if (bridge->isValid())
+        bridge->close();
+    voluntaryClose = false;
+
+    ready = false;
+    emit readyChanged();
+    instanceIdValue.clear();
+    sessionIdValue.clear();
+    resumed = false;
+    emit resumedChanged();
+    stage = Idle;
+    setStatus(QStringLiteral("jonction vers « %1 »…").arg(QFileInfo(openWorkspacePath).fileName()));
+    connectHub();
+}
+
 // --- reglages ---------------------------------------------------------------
 
 /*
@@ -421,6 +534,23 @@ void HubClient::startSession()
 {
     sessionNewTries = 0;
     promptRecoveries = 0;
+
+    // Une ouverture demandee par la carte du hub : elle passe devant la session
+    // gardee, c'est elle que le corps fait parler maintenant.
+    if (!pendingOpenSession.isEmpty()) {
+        const QString requested = pendingOpenSession;
+        pendingOpenSession.clear();
+        sessionIdValue = requested;
+        resumed = true;
+        emit resumedChanged();
+        setStatus(QStringLiteral("ouverture de la session %1…").arg(shortId(requested)));
+        rpcSend(QStringLiteral("session/load"),
+                QJsonObject{{QStringLiteral("sessionId"), requested},
+                            {QStringLiteral("cwd"), workspace},
+                            {QStringLiteral("mcpServers"), QJsonArray{}}},
+                false);
+        return;
+    }
 
     if (storedSessionValue.isEmpty()) {
         mintSession();
@@ -781,6 +911,7 @@ void HubClient::openSessionReady()
     stage = Live;
     emit readyChanged();
     sessionStatusLine();
+    listSessions();
 
     if (!pendingPrompt.isEmpty()) {
         const QString prompt = pendingPrompt;

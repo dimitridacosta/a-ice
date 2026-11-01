@@ -684,6 +684,34 @@ Window {
                     }
                 }
             }
+
+            /*
+             * Multi-sessions : les sessions vivantes du hub, une par ligne,
+             * cliquable. Le corps ne connaît jamais que l'une d'elles a la fois —
+             * ouvrir l'autre vide la conversation et fait rejouer l historique.
+             */
+            Repeater {
+                model: hub.sessions
+
+                delegate: Column {
+                    spacing: 1
+
+                    Text {
+                        text: (modelData.title.length
+                                   ? (modelData.title.length > 34 ? modelData.title.slice(0, 34) + "…" : modelData.title)
+                                   : modelData.sessionId.slice(0, 8))
+                              + " · " + modelData.workspace + (modelData.state === "idle" ? "" : " · " + modelData.state)
+                        color: modelData.sessionId === hub.sessionId ? win.ink : "#80e9eaee"
+                        font.family: win.uiFont
+                        font.pixelSize: 10
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: hub.openSession(modelData.sessionId, modelData.workspacePath)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -892,12 +920,18 @@ Window {
         }
     }
 
-    /* Repartre d une conversation vierge : le modele se vide avec la session. */
-    function newConversation() {
+    /* Vider la conversation : changement de session ou rupture, le modele
+       repart de zero (l'historique rejoue reconstitue ce qui l'a cree). */
+    function resetConversation() {
         bubbleModel.clear();
         streamRow = -1;
         streamMessageId = "";
         settleTimer.start();
+    }
+
+    /* Repartre d une conversation vierge : le modele se vide avec la session. */
+    function newConversation() {
+        resetConversation();
         hub.startFreshConversation();
     }
 
@@ -909,6 +943,7 @@ Window {
         function onChunkReceived(messageId, role, text) { win.appendChunk(messageId, role, text); }
         function onTurnEnded(stopReason) { win.endTurn(stopReason); }
         function onParsed(messageId, html) { win.applyHtml(messageId, html); }
+        function onHistoryReset() { win.resetConversation(); }
     }
 
     // Bourrage d'affichage (AICE_PUMP=1) : redessine en continu, pour que le

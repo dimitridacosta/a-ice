@@ -43,6 +43,7 @@ class HubClient : public QObject
     Q_PROPERTY(QString permissionTool READ permissionTool NOTIFY permissionChanged)
     Q_PROPERTY(QString permissionDetail READ permissionDetail NOTIFY permissionChanged)
     Q_PROPERTY(QVariantList permissionOptions READ permissionOptions NOTIFY permissionChanged)
+    Q_PROPERTY(QVariantList sessions READ sessions NOTIFY sessionsChanged)
 
 public:
     explicit HubClient(QObject *parent = nullptr);
@@ -63,6 +64,9 @@ public:
     QString permissionTool() const { return permissionToolValue; }
     QString permissionDetail() const { return permissionDetailValue; }
     QVariantList permissionOptions() const { return permissionOptionsValue; }
+    // Les sessions du hub, toutes instances dehors (carte hub, M3) : {sessionId,
+    // title, state, workspace, workspacePath} par session vivante.
+    QVariantList sessions() const { return sessionsValue; }
 
     // Rejoindre le hub : instance (réutilisée ou incubée), puis session ACP.
     Q_INVOKABLE void connectHub();
@@ -81,6 +85,11 @@ public:
     // Repartir d une conversation vierge : on oublie la session gardeée.
     Q_INVOKABLE void startFreshConversation();
 
+    // Multi-sessions : la liste des sessions du hub, et l'ouverture de l'une
+    // d'elles (session/load, l'historique rejoue comme a la reprise).
+    Q_INVOKABLE void listSessions();
+    Q_INVOKABLE void openSession(const QString &sessionId, const QString &workspacePath);
+
 signals:
     // Un chunk, avec son message : le meme messageId designe la meme bulle (le
     // texte qui coule), un messageId nouveau ouvre une bulle (reprise d historique).
@@ -94,6 +103,10 @@ signals:
     void statusChanged();
     void toolLineChanged();
     void permissionChanged();
+    void sessionsChanged();
+    // La conversation change de session : le modele de bulles doit se vider
+    // avant que l historique rejoue n arrive.
+    void historyReset();
 
 private:
     // Les etapes de la prise de contact, dans l'ordre.
@@ -143,7 +156,10 @@ private:
 
     QString cliWorkspace;        // --workspace : le dossier vise par ce lancement
     QString storedSessionValue;  // session vecue, retrouvee dans QSettings
+    QString pendingOpenSession;  // session demande par openSession(), a charger
+    QString openWorkspacePath;   // le workspace cible de cette ouverture
     QString retryPromptText;    // le tour relance si la session etait perimeee
+    QVariantList sessionsValue;
     int promptRecoveries = 0;
 
     qint64 nextRpcId = 1;
