@@ -47,8 +47,29 @@ une session déjà live est refusée au profit d'une session neuve.*
 gardée par workspace dans `QSettings`, `session/load` à chaque lancement (le pont
 rejoue l'historique), session neuve mintée quand la gardée est périmée, et fin de
 tour close par le `turnState` du pont. Voir la dernière section de
-[M2-client-hub.md](M2-client-hub.md). Reste : markdown hors UI thread,
-multi-sessions, source unique du hub.*
+[M2-client-hub.md](M2-client-hub.md).
+
+*Suite (2026-11-01, émissaire) : les trois pièces restantes sont posées.*
+1. **Markdown hors UI thread** — `poc/Markdown.cpp` : les bulles agent fermées
+   partent au parseur (`QTextDocument::setMarkdown` → `toHtml` dans le pool) ;
+   le streaming reste en PlainText, la bulle bascule en RichText quand son html
+   revient par `messageId`. La longueur naturelle se mesure en riche aussi.
+2. **Multi-sessions** — `/api/instances` est déroulé dans `hub.sessions`
+   (sessionId, title, status, workspace) et la carte du hub liste une ligne
+   cliquable par session : même instance → `session/load` en place ; autre
+   workspace → nouvelle jonction (le pont est par instance), historique rejoué.
+   Le modèle de bulles est vidé par `historyReset` avant le replay.
+3. **Source unique du hub** — le bloc `hub` de `~/.config/a-ice/config.json`
+   (hubUrl, token, workspace) est la seule réglée : la GUI migre le `remote` de
+   zcode-acp une fois pour toutes à son premier lancement (bloc écrit, jamais
+   réécrit), et le tool zcode-emissary le lit en premier (zcode-acp en repli).
+
+Reste en M3 : les trois piéces validées au build + un tour réel (end_turn), les
+clics de la carte-liste et le changement d'instance restent à passer à l'œil.
+
+Reste pour M4 : polish du corps — ombres, dégradés, animations d'entrée, thème
+complet, doc utilisateur ; rejuger les acquis d'origin/v2 (layer-shell par
+défaut, shader de fade, fusion de v2).
 
 ### M4 — Polish
 - Ombres, dégradés, animations d'entrée, thème complet, doc utilisateur.
