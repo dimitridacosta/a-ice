@@ -179,7 +179,7 @@ L'ombre est réglée à l'œil sur capture (`CardShadow`) :
 | `intensity` | 0,6 | moins opaque : l'ombre est de l'air, pas une plaque. Elle ne depasse de toute facon jamais l'alpha de la carte qui la porte (0,43 pour la barre) |
 | `softness` | 0,85 | 85 % du flou max : le degrade s'etale, l'ombre est diffuse |
 | `maxBlur` | 50 px | 42 px de halo : la penombre monte loin autour de la carte |
-| `drop` | 14 px (18 pour la barre, 12 pour le badge, la carte du hub et la carte d'autorisation) | la carte flotte |
+| `drop` | **5 px** (6 px pour la barre de prompt) | l'ombre reste **centree sur la carte** : un devers de 14 px avec un halo de 42 px descendait bien trop bas par rapport a la carte |
 
 Ces reglages se sont corriges a la mesure, pas a l'ceil : le ratio `B/R` de la
 penombre doit coller a celui du fond (1,20 ici) — des qu'il monte (1,6, puis 1,9
@@ -275,7 +275,7 @@ Deux pièges ont été évités d'emblée, ils sont repris plus bas dans « Piè
    l'assumer (le drag devient moins fluide).
 3. **`AICE_LAYER=1`** : overlay sans ancre, au-dessus de tout, sans tâche dans le
    panel. Le chemin layer-shell est écrit mais n'a pas été essayé en conditions réelles.
-4. **Le gout de l'ombre** (noire, intensité 0,6, flou 50 px, halo 85 %, dévers 14 px) et du fade (90 px) au toucher, et le scroll à 2 000 bulles. Ces
+4. **Le gout de l'ombre** (noire, intensité 0,6, flou 50 px, halo 85 %, dévers 5 px) et du fade (90 px) au toucher, et le scroll à 2 000 bulles. Ces
    réglages sont discutables — `CardShadow` est un composant unique, ils se changent
    là, et `AICE_SHADOW=0` permet de comparer avec/sans en direct.
 5. La persistance de position : relancer et vérifier que la fenêtre se remet où elle

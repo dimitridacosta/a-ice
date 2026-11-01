@@ -74,7 +74,7 @@ Window {
         property real intensity: 0.6      // 0 = pas d'ombre : moins opaque, l'ombre est de l'air
         property real softness: 0.85      // epaisseur du degrade (fraction du flou max)
         property int maxBlur: 50          // 42 px de halo : l'ombre monte plus haut, plus diffuse
-        property int drop: 14             // devers vers le bas : la carte flotte
+        property int drop: 5              // 5 px sous la carte : l'ombre reste centree sur elle
         /*
          * Ombre NOIRE, pas bleue. L'ombre est dessinee DERRIERE la carte, qui est
          * translucide : une ombre bleue se voit donc a travers la carte, et toute
@@ -288,7 +288,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { drop: 18 }
+            layer.effect: CardShadow { drop: 6 }
         }
 
         // Saisie de la fenetre : le geste natif du composeur si il le sait faire,
@@ -540,7 +540,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { intensity: 0.5; drop: 12 }
+            layer.effect: CardShadow { intensity: 0.5 }
         }
 
         Column {
@@ -630,7 +630,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { intensity: 0.5; drop: 12 }
+            layer.effect: CardShadow { intensity: 0.5 }
         }
 
         Column {
@@ -694,7 +694,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { intensity: 0.5; drop: 12 }
+            layer.effect: CardShadow { intensity: 0.5 }
         }
 
         Column {
