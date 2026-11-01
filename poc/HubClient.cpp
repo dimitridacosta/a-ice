@@ -430,6 +430,10 @@ void HubClient::disconnectHub()
     setGenerating(false);
     instanceIdValue.clear();
     sessionIdValue.clear();
+    // La liste des sessions suit : des lignes cliquables pointeraient sur un
+    // pont mort ; elles reviennent de openSessionReady() a la reprise.
+    sessionsValue.clear();
+    emit sessionsChanged();
     resumed = false;
     emit resumedChanged();
     setStatus(QStringLiteral("debranche"));
