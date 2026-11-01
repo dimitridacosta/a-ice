@@ -942,8 +942,14 @@ Window {
         // session reprise passe par le meme chemin : le pont rejoue l historique.
         function onChunkReceived(messageId, role, text) { win.appendChunk(messageId, role, text); }
         function onTurnEnded(stopReason) { win.endTurn(stopReason); }
-        function onParsed(messageId, html) { win.applyHtml(messageId, html); }
         function onHistoryReset() { win.resetConversation(); }
+    }
+
+    Connections {
+        // Le parseur vit en dehors du hub : son html parse revient par sa
+        // propre connexion et rattrape sa bulle hors du chemin du pont.
+        target: markdown
+        function onParsed(messageId, html) { win.applyHtml(messageId, html); }
     }
 
     // Bourrage d'affichage (AICE_PUMP=1) : redessine en continu, pour que le
