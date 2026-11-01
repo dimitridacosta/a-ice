@@ -251,11 +251,12 @@ void HubClient::openSession(const QString &sessionId, const QString &workspacePa
 // --- reglages ---------------------------------------------------------------
 
 /*
- * Le hub est celui que zcode-acp tient sur la machine : « remote » dans
- * ~/.config/zcode-acp/config.json (hubHost, hubPort, token). Le plan de la
- * refonte previsait un bloc « hub » dans ~/.config/a-ice/config.json : il est
- * lu en priorite, on bascule sur zcode-acp si il manque.
- * AICE_HUB / AICE_TOKEN / AICE_WORKSPACE écrasent tout.
+ * Le hub se regle EN UN SEUL ENDROIT : le bloc « hub » de
+ * ~/.config/a-ice/config.json (hubUrl, token, workspace), partage par la GUI
+ * et les tools. S'il manque mais que ~/.config/zcode-acp/config.json connaît
+ * son « remote », on migre les valeurs une fois pour toutes dans le bloc —
+ * zcode-acp redevient un detail d'installation. AICE_HUB / AICE_TOKEN /
+ * AICE_WORKSPACE ecrasent tout (dev).
  */
 void HubClient::loadSettings()
 {
@@ -276,10 +277,11 @@ void HubClient::loadSettings()
         workspace = settings.value(QStringLiteral("hub/workspace")).toString();
     }
 
+    const QString aiceConfigPath = QDir::homePath() + "/.config/a-ice/config.json";
+
     if (hubHttpBase.isEmpty() || token.isEmpty()) {
-        const QJsonObject hub = readJsonFile(QDir::homePath() + "/.config/a-ice/config.json")
-                                    .value("hub")
-                                    .toObject();
+        const QJsonObject aice = readJsonFile(aiceConfigPath);
+        const QJsonObject hub = aice.value("hub").toObject();
         if (!hub.isEmpty()) {
             if (hubHttpBase.isEmpty())
                 hubHttpBase = hub.value("hubUrl").toString();
@@ -293,13 +295,34 @@ void HubClient::loadSettings()
     if (hubHttpBase.isEmpty() || token.isEmpty()) {
         const QJsonObject remote =
             readJsonFile(QDir::homePath() + "/.config/zcode-acp/config.json").value("remote").toObject();
-        if (hubHttpBase.isEmpty() && !remote.isEmpty()) {
-            hubHttpBase = QStringLiteral("http://%1:%2")
-                              .arg(remote.value("hubHost").toString(QStringLiteral("127.0.0.1")))
-                              .arg(remote.value("hubPort").toInt(8377));
+        if (!remote.isEmpty()) {
+            if (hubHttpBase.isEmpty())
+                hubHttpBase = QStringLiteral("http://%1:%2")
+                                  .arg(remote.value("hubHost").toString(QStringLiteral("127.0.0.1")))
+                                  .arg(remote.value("hubPort").toInt(8377));
+            if (token.isEmpty())
+                token = remote.value("token").toString();
+            if (workspace.isEmpty())
+                workspace = remote.value("workspace").toString();
+
+            // Migration : le bloc devient la source unique des prochains
+            // lancements (et de tout ce qui lit config.json). On ecrit sans
+            // reecrire les cles que l'utilisateur y a posees.
+            QJsonObject migrated;
+            migrated.insert(QStringLiteral("hubUrl"), hubHttpBase);
+            migrated.insert(QStringLiteral("token"), token);
+            if (!workspace.isEmpty())
+                migrated.insert(QStringLiteral("workspace"), workspace);
+            QJsonObject full = readJsonFile(aiceConfigPath);
+            if (full.isEmpty() && !QFileInfo(aiceConfigPath).dir().mkpath("."))
+                return;
+            if (full.value("hub").toObject().isEmpty()) {
+                full.insert(QStringLiteral("hub"), migrated);
+                QFile out(aiceConfigPath);
+                if (out.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                    out.write(QJsonDocument(full).toJson(QJsonDocument::Indented));
+            }
         }
-        if (token.isEmpty())
-            token = remote.value("token").toString();
     }
 
     if (workspace.isEmpty())
