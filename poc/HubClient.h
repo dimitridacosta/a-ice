@@ -37,6 +37,7 @@ class HubClient : public QObject
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QString instanceId READ instanceId NOTIFY statusChanged)
     Q_PROPERTY(QString sessionId READ sessionId NOTIFY statusChanged)
+    Q_PROPERTY(QString workspace READ workspaceName NOTIFY statusChanged)
     Q_PROPERTY(QString toolLine READ toolLine NOTIFY toolLineChanged)
     Q_PROPERTY(bool permissionPending READ isPermissionPending NOTIFY permissionChanged)
     Q_PROPERTY(QString permissionTool READ permissionTool NOTIFY permissionChanged)
@@ -54,6 +55,10 @@ public:
     QString status() const { return statusText; }
     QString instanceId() const { return instanceIdValue; }
     QString sessionId() const { return sessionIdValue; }
+    QString workspaceName() const { return workspace; }
+
+    // Quel dossier du hub ce corps veut-il faire parler ? (--workspace)
+    void setWorkspace(const QString &path) { cliWorkspace = path; }
     QString toolLine() const { return toolLineValue; }
     QString permissionTool() const { return permissionToolValue; }
     QString permissionDetail() const { return permissionDetailValue; }
@@ -136,6 +141,7 @@ private:
     QString permissionDetailValue;
     QVariantList permissionOptionsValue;
 
+    QString cliWorkspace;        // --workspace : le dossier vise par ce lancement
     QString storedSessionValue;  // session vecue, retrouvee dans QSettings
     QString retryPromptText;    // le tour relance si la session etait perimeee
     int promptRecoveries = 0;

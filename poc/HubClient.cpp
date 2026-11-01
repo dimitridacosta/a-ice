@@ -150,6 +150,19 @@ void HubClient::loadSettings()
     token = qEnvironmentVariable("AICE_TOKEN");
     workspace = qEnvironmentVariable("AICE_WORKSPACE");
 
+    // --workspace est une decision de lancement : on la garde dans QSettings pour
+    // que les suivent sans avoir a la repeter. Priorite : variable d environment,
+    // puis --workspace, puis ce qui a ete pose au lancement precedent.
+    if (!cliWorkspace.isEmpty()) {
+        workspace = cliWorkspace;
+        QSettings settings;
+        settings.setValue(QStringLiteral("hub/workspace"), cliWorkspace);
+    }
+    if (workspace.isEmpty()) {
+        QSettings settings;
+        workspace = settings.value(QStringLiteral("hub/workspace")).toString();
+    }
+
     if (hubHttpBase.isEmpty() || token.isEmpty()) {
         const QJsonObject hub = readJsonFile(QDir::homePath() + "/.config/a-ice/config.json")
                                     .value("hub")

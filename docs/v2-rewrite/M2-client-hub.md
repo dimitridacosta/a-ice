@@ -69,11 +69,20 @@ Attention : `--prompt` prompte depuis le C++ — il n'insère pas de bulle user.
 | `AICE_HUB=<http://hote:port>` | écrase l'adresse du hub |
 | `AICE_TOKEN=<jeton>` | écrase le jeton |
 | `AICE_WORKSPACE=<chemin>` | écrase le workspace visé |
+| `--workspace <chemin>` | le dossier du hub à faire parler ; posé pour les lancements suivants |
 | `AICE_SHOT_MS=<ms>` | décale la capture `AICE_SHOT` : sert à capturer **pendant** un tour |
 
 Sans écrasement, le client lit le bloc `hub` de `~/.config/a-ice/config.json` s'il
 existe, sinon `remote` de `~/.config/zcode-acp/config.json` (`hubHost`, `hubPort`,
 `token`) — c'est exactement ce que lisent loom et l'outil émissaire.
+
+Depuis la séance du 2026-11-01, `--workspace <chemin>` désigne le dossier du hub que
+le corps veut faire parler (et le pose dans `QSettings`, `[hub] workspace`, pour les
+lancements suivants). La carte du hub affiche « dans <chemin> » : on sait quel
+cerveur on a en face. Mesuré avec `--workspace /var/home/dimitri/.config/a-ice` :
+instance réutilisée (`534584`), **session neuve mintée** (`b4f8935f…`) — la garde a
+bien évité de reprendre `6f181149…` ou `24d76ae6…`, qui sont les sessions live du
+téléphone —, tour mené à bout, puis conversation reprise au lancement suivant.
 
 ## Ce qui a été mesuré
 

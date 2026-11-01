@@ -39,10 +39,16 @@ int main(int argc, char *argv[])
     parser.addOption(QCommandLineOption(QStringLiteral("prompt"),
         QStringLiteral("Envoie ce prompt des que la session ACP est ouverte (test M2)."),
         QStringLiteral("texte")));
+    parser.addOption(QCommandLineOption(QStringLiteral("workspace"),
+        QStringLiteral("Quel dossier du hub faire parler (ex : /var/home/dimitri/.config/a-ice). "
+                       "Pose le choix pour les lancements suivants."),
+        QStringLiteral("chemin")));
     parser.process(app);
 
     GlassHelper glass;
     HubClient hub;
+    if (parser.isSet(QStringLiteral("workspace")))
+        hub.setWorkspace(parser.value(QStringLiteral("workspace")));
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("glass"), &glass);
     engine.rootContext()->setContextProperty(QStringLiteral("hub"), &hub);

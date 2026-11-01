@@ -641,6 +641,14 @@ Window {
                 font.family: win.uiFont
                 font.pixelSize: 11
             }
+            Text {
+                visible: hub.ready
+                // On voit quel cerveau du hub on est en train de faire parler.
+                text: "dans " + hub.workspace
+                color: "#70e9eaee"
+                font.family: win.uiFont
+                font.pixelSize: 10
+            }
             Row {
                 spacing: 10
                 Text {
