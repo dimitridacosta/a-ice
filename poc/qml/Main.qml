@@ -57,19 +57,17 @@ Window {
      * mesure ainsi le cout reel (un rendu en deux passes par carte).
      */
     component CardShadow: MultiEffect {
-        property real intensity: 0.9      // 0 = pas d'ombre
-        property real softness: 0.5       // epaisseur du degrade (fraction du flou max)
-        property int maxBlur: 22          // 11 px de halo : moins que le devers, sinon
-                                          // la carte a un liseré lumineux au lieu d'une ombre
-        property int drop: 11             // devers vers le bas : la carte flotte
+        property real intensity: 0.8      // 0 = pas d'ombre
+        property real softness: 0.7       // epaisseur du degrade (fraction du flou max)
+        property int maxBlur: 40          // 28 px de halo : l'ombre est diffuse
+        property int drop: 10             // devers vers le bas : la carte flotte
         /*
-         * Bleu sature et serre, pas un bleu pale : l'ombre se compose sur un fond
-         * deja clair (le fond de controle, comme le papier peint floute de Plasma),
-         * donc une teinte desensee devient grise a la mesure. Et l'ombre ne herite
-         * que de l'alpha de la carte (0,43 pour la barre) : il lui faut toute son
-         * opacite pour rester bleutee.
+         * Ombre NOIRE, pas bleue. L'ombre est dessinee DERRIERE la carte, qui est
+         * translucide : une ombre bleue se voit donc a travers la carte, et toute
+         * la carte parait bleutee — c'est ce qu'on voyait, bien plus que l'ombre
+         * elle-meme. Le noir laisse le verre garder sa teinte a lui.
          */
-        property color tint: Qt.rgba(0.02, 0.14, 0.72, 1.0)
+        property color tint: Qt.rgba(0, 0, 0, 1.0)
 
         shadowEnabled: intensity > 0
         shadowColor: tint
@@ -257,7 +255,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { drop: 14 }
+            layer.effect: CardShadow { drop: 12 }
         }
 
         // Saisie de la fenetre : le geste natif du composeur si il le sait faire,
@@ -412,7 +410,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { intensity: 0.9; drop: 9 }
+            layer.effect: CardShadow { intensity: 0.7; drop: 8 }
         }
 
         Column {
@@ -502,7 +500,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { intensity: 0.75; drop: 9 }
+            layer.effect: CardShadow { intensity: 0.7; drop: 8 }
         }
 
         Column {
@@ -566,7 +564,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { intensity: 0.75; drop: 9 }
+            layer.effect: CardShadow { intensity: 0.7; drop: 8 }
         }
 
         Column {
