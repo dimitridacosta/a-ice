@@ -23,10 +23,33 @@
 #include <QObject>
 #include <QString>
 #include <QVariantList>
+#include <QVector>
 
 class QNetworkAccessManager;
 class QWebSocket;
 class QTimer;
+
+/*
+ * Une demande du moteur qui attend notre reponse : autorisation (permission) ou,
+ * plus tard, questionnaire (elicitation). Le pont diffuse la demande a toutes ses
+ * connexions et garde la premiere reponse ; chacune de nos demandes doit donc
+ * pouvoir etre retiree toute seule quand une autre main a tranche.
+ *
+ * Les champs sont ceux du protocole, tels quels : les libelles d'options viennent
+ * du moteur, on ne les reecrit pas — et on ne renvoie jamais qu'un optionId, sinon
+ * le pont recolle une decision one-shot a une demande qui voulait etre durable.
+ */
+struct AskRequest
+{
+    qint64 rpcId = -1;
+    QString toolCallId;   // sert a retirer la bonne carte quand une autre main tranche
+    QString tool;         // titre de l'outil, tel que le moteur le nomme
+    QString toolKind;     // execute | read | edit | search | fetch | other
+    QString detail;       // l'entree de l'outil (rawInput)
+    QString output;       // la sortie de terminal, quand le moteur la joint deja
+    QVariantList options; // permission : { optionId, name, kind, allow }
+    QVariantList fields;  // elicitation : { key, title, help, kind, options, otherKey, otherTitle }
+};
 
 class HubClient : public QObject
 {
@@ -41,9 +64,19 @@ class HubClient : public QObject
     Q_PROPERTY(QString toolLine READ toolLine NOTIFY toolLineChanged)
     Q_PROPERTY(bool permissionPending READ isPermissionPending NOTIFY permissionChanged)
     Q_PROPERTY(QString permissionTool READ permissionTool NOTIFY permissionChanged)
+    Q_PROPERTY(QString permissionKind READ permissionKind NOTIFY permissionChanged)
     Q_PROPERTY(QString permissionDetail READ permissionDetail NOTIFY permissionChanged)
+    Q_PROPERTY(QString permissionOutput READ permissionOutput NOTIFY permissionChanged)
     Q_PROPERTY(QVariantList permissionOptions READ permissionOptions NOTIFY permissionChanged)
+    // File d'attente : un moteur peut demander plusieurs autorisations d'affilée.
+    Q_PROPERTY(int askCount READ askCount NOTIFY permissionChanged)
+    Q_PROPERTY(int askIndex READ askIndex NOTIFY permissionChanged)
     Q_PROPERTY(QVariantList sessions READ sessions NOTIFY sessionsChanged)
+    // Le questionnaire du moteur (elicitation/create, mode form) : une carte, un
+    // champ par question. La file de demandes se suit par askCount/askIndex.
+    Q_PROPERTY(bool elicitationPending READ isElicitationPending NOTIFY permissionChanged)
+    Q_PROPERTY(QString elicitationMessage READ elicitationMessage NOTIFY permissionChanged)
+    Q_PROPERTY(QVariantList elicitationFields READ elicitationFields NOTIFY permissionChanged)
 
 public:
     explicit HubClient(QObject *parent = nullptr);
@@ -51,7 +84,12 @@ public:
     bool isReady() const { return ready; }
     bool isResumed() const { return resumed; }
     bool isGenerating() const { return generating; }
-    bool isPermissionPending() const { return permissionRpcId >= 0; }
+    bool isPermissionPending() const { return !permissionAsks.isEmpty(); }
+    bool isElicitationPending() const { return !elicitationAsks.isEmpty(); }
+
+    // Combien de demandes attendent, et laquelle est montree (carte « demande 2/3 »).
+    int askCount() const;
+    int askIndex() const;
 
     QString status() const { return statusText; }
     QString instanceId() const { return instanceIdValue; }
@@ -61,9 +99,13 @@ public:
     // Quel dossier du hub ce corps veut-il faire parler ? (--workspace)
     void setWorkspace(const QString &path) { cliWorkspace = path; }
     QString toolLine() const { return toolLineValue; }
-    QString permissionTool() const { return permissionToolValue; }
-    QString permissionDetail() const { return permissionDetailValue; }
-    QVariantList permissionOptions() const { return permissionOptionsValue; }
+    QString permissionTool() const;
+    QString permissionKind() const;
+    QString permissionDetail() const;
+    QString permissionOutput() const;
+    QVariantList permissionOptions() const;
+    QString elicitationMessage() const;
+    QVariantList elicitationFields() const;
     // Les sessions du hub, toutes instances dehors (carte hub, M3) : {sessionId,
     // title, state, workspace, workspacePath} par session vivante.
     QVariantList sessions() const { return sessionsValue; }
@@ -81,6 +123,12 @@ public:
 
     // Reponse a une demande d'autorisation : optionId choisi, ou annule.
     Q_INVOKABLE void respondPermission(const QString &optionId);
+    // L'option de refus a presenter au clavier (Échap), vide s'il n'y en a pas.
+    Q_INVOKABLE QString rejectOption() const;
+
+    // Reponse a un questionnaire : « accept » + le contenu rendu conforme au
+    // schema, « decline », ou « cancel » (rien n'est obligatoire cote moteur).
+    Q_INVOKABLE void respondElicitation(const QString &action, const QVariantMap &content);
 
     // Repartir d une conversation vierge : on oublie la session gardeée.
     Q_INVOKABLE void startFreshConversation();
@@ -127,6 +175,10 @@ private:
     void onBridgeText(const QString &message);
     void onBridgeNotification(const QJsonObject &msg);
     void showPermissionRequest(const QJsonObject &msg);
+    void showElicitationRequest(const QJsonObject &msg);
+    void rejectRequest(const QJsonObject &msg);
+    void settleAsk(const QString &kind, const QString &toolCallId);
+    void clearPermissionAsks();
     void verifySessionFreshness();
     void openSessionReady();
     void endTurn(const QString &stopReason);
@@ -150,9 +202,6 @@ private:
     QString pendingPrompt;
     QString statusText;
     QString toolLineValue;
-    QString permissionToolValue;
-    QString permissionDetailValue;
-    QVariantList permissionOptionsValue;
 
     QString cliWorkspace;        // --workspace : le dossier vise par ce lancement
     QString storedSessionValue;  // session vecue, retrouvee dans QSettings
@@ -163,7 +212,9 @@ private:
     int promptRecoveries = 0;
 
     qint64 nextRpcId = 1;
-    qint64 permissionRpcId = -1;
+    // Les demandes en attente, la premiere en tete : c'est elle que la carte montre.
+    QVector<AskRequest> permissionAsks;
+    QVector<AskRequest> elicitationAsks;
     int sessionNewTries = 0;
     QMap<qint64, QString> pendingMethod;   // id de requete -> methode, pour trier les reponses
 

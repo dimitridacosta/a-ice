@@ -99,6 +99,37 @@ Window {
     }
 
     /*
+     * Un bouton d'autorisation : le libellé est celui du moteur, la place est
+     * celle du kind (autoriser a gauche, refuser a droite).
+     */
+    component AskOption: Rectangle {
+        id: askOption
+
+        required property var modelData
+
+        width: askOptionLabel.width + 22
+        height: 28
+        radius: 14
+        color: modelData.allow ? "#5A3478DA" : "#4AD24453"
+        border.color: "#30FFFFFF"
+        border.width: 1
+
+        Text {
+            id: askOptionLabel
+            anchors.centerIn: parent
+            text: (modelData.name && modelData.name.length) ? modelData.name : modelData.optionId
+            color: win.ink
+            font.family: win.uiFont
+            font.pixelSize: 12
+        }
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: hub.respondPermission(modelData.optionId)
+        }
+    }
+
+    /*
      * Un bloc de markdown rendu dans une carte.
      *
      * L'air est celui de la v1, et c'est la carte qui le porte : 5 px autour d'un
@@ -336,7 +367,7 @@ Window {
                 // haut et en bas. Une bulle d'une seule ligne est donc tres petite.
                 // En riche, c'est la largeur naturelle de ses blocs qui decide.
                 width: Math.min(cell.width - 2 * win.halo,
-                                Math.max(cell.rich ? naturalBlocks.childrenRect.width
+                                Math.max(cell.rich ? naturalBlocks.implicitWidth
                                                    : natural.implicitWidth,
                                           40) + 24)
                 height: (cell.rich ? blockCol.implicitHeight : body.implicitHeight) + 16
@@ -534,13 +565,40 @@ Window {
                 // TextEdit (Qt Quick de base) n'a pas de signal accepted :
                 // l'entrée est traitee a la main, et shift+entrée garde son
                 // comportement (saut de ligne dans le prompt).
+                // Une demande du moteur passe avant le prompt : Entrée prend la
+                // premiere autorisation (le pont les a rangeees), Échap prend le
+                // refus du moteur — jamais un « cancelled » invente quand le
+                // moteur propose son propre refus.
                 Keys.onReturnPressed: (event) => {
                     if (event.modifiers & Qt.ShiftModifier)
                         return;
+                    if (hub.permissionPending) {
+                        const options = hub.permissionOptions;
+                        hub.respondPermission(options.length ? options[0].optionId : "");
+                        event.accepted = true;
+                        return;
+                    }
+                    if (hub.elicitationPending) {
+                        askCard.accepted();
+                        event.accepted = true;
+                        return;
+                    }
                     win.send();
                     event.accepted = true;
                 }
-                Keys.onEscapePressed: Qt.quit()
+                Keys.onEscapePressed: (event) => {
+                    if (hub.permissionPending) {
+                        hub.respondPermission(hub.rejectOption());
+                        event.accepted = true;
+                        return;
+                    }
+                    if (hub.elicitationPending) {
+                        hub.respondElicitation("cancel", ({}));
+                        event.accepted = true;
+                        return;
+                    }
+                    Qt.quit();
+                }
                 Keys.onPressed: (event) => {
                     if (event.key === Qt.Key_Q && (event.modifiers & Qt.ControlModifier)) {
                         Qt.quit();
@@ -647,18 +705,24 @@ Window {
         }
     }
 
-    /* --------------------------------------------- carte d'autorisation (M2) */
+    /* ------------------------------ carte d'autorisation (M2, reprise M3b) */
 
     /*
      * Le pont retransmet `session/request_permission` : la demande du moteur
-     * devient une carte de verre au-dessus de la barre, une option = un bouton.
-     * C'est le seul endroit de l'UI ou le corps decide de laisser un outil agir.
+     * devient une carte de verre au-dessus de la barre. Les autorisations sont a
+     * gauche (la premiere est le choix par defaut, Entrée), les refus a droite
+     * (Échap). Les libelles viennent du moteur, tels quels : on ne renvoie qu'un
+     * optionId, et c'est le pont qui recolle la decision durable (une decision
+     * invente here ferait d'un « toujours » un one-shot).
      */
     Item {
         id: permCard
 
         property bool glassCard: true
         property int glassRadius: win.cardRadius
+
+        // L'entree de l'outil est coupee a trois lignes ; « deployer » la montre entiere.
+        property bool detailShown: false
 
         visible: hub.permissionPending
 
@@ -691,54 +755,414 @@ Window {
             id: permCol
             x: 12
             y: 8
-            spacing: 7
+            spacing: 6
             width: permCard.width - 24
 
-            Text {
+            Item {
                 width: permCol.width
-                text: "le moteur demande : " + hub.permissionTool
-                color: win.ink
-                font.family: win.uiFont
-                font.pixelSize: 13
-                font.bold: true
+                height: 18
+
+                Text {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - (hub.askCount > 1 ? 120 : 0)
+                    text: "le moteur demande : " + hub.permissionTool
+                          + (hub.permissionKind.length ? "  \u00b7  " + hub.permissionKind : "")
+                    color: win.ink
+                    font.family: win.uiFont
+                    font.pixelSize: 13
+                    font.bold: true
+                    elide: Text.ElideRight
+                }
+                Text {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: hub.askCount > 1
+                    text: "demande " + hub.askIndex + " sur " + hub.askCount
+                    color: "#80e9eaee"
+                    font.family: win.uiFont
+                    font.pixelSize: 11
+                }
             }
+
+            // L'entree de l'outil, en monospace : c'est du texte de commande.
             Text {
                 width: permCol.width
                 text: hub.permissionDetail
                 color: "#A8e9eaee"
-                font.family: win.uiFont
+                font.family: win.monoFont
                 font.pixelSize: 11
+                wrapMode: Text.WordWrap
                 elide: Text.ElideRight
+                maximumLineCount: permCard.detailShown ? 100000 : 3
+            }
+
+            // La sortie, quand le moteur la joint deja a sa demande.
+            Text {
+                visible: hub.permissionOutput.length > 0
+                width: permCol.width
+                text: hub.permissionOutput
+                color: "#80e9eaee"
+                font.family: win.monoFont
+                font.pixelSize: 10
+                wrapMode: Text.WordWrap
+                elide: Text.ElideRight
+                maximumLineCount: 3
             }
 
             Row {
-                spacing: 8
-                Repeater {
-                    model: hub.permissionOptions
-                    delegate: Rectangle {
-                        required property var modelData
+                spacing: 10
+                Text {
+                    text: permCard.detailShown ? "replier" : "deployer"
+                    color: "#80e9eaee"
+                    font.family: win.uiFont
+                    font.pixelSize: 11
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: permCard.detailShown = !permCard.detailShown
+                    }
+                }
+                Text {
+                    text: "annuler la demande"
+                    color: "#80e9eaee"
+                    font.family: win.uiFont
+                    font.pixelSize: 11
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        // Aucune option : le pont reprend la main, c'est le « cancelled » du protocole.
+                        onClicked: hub.respondPermission("")
+                    }
+                }
+            }
 
-                        width: optionLabel.width + 22
-                        height: 28
-                        radius: 14
-                        color: modelData.kind === "reject" ? "#4AD24453" : "#5A3478DA"
-                        border.color: "#30FFFFFF"
-                        border.width: 1
+            Item {
+                width: permCol.width
+                height: 28
 
-                        Text {
-                            id: optionLabel
-                            anchors.centerIn: parent
-                            text: (modelData.name && modelData.name.length)
-                                      ? modelData.name : modelData.optionId
+                Row {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 8
+                    Repeater {
+                        model: hub.permissionOptions.filter((o) => o.allow)
+                        delegate: AskOption {}
+                    }
+                }
+
+                Row {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 8
+                    Repeater {
+                        model: hub.permissionOptions.filter((o) => !o.allow)
+                        delegate: AskOption {}
+                    }
+                }
+            }
+        }
+    }
+
+    /* ------------------------------- carte de questionnaire (M3c) */
+
+    /*
+     * `elicitation/create` (mode formulaire) : le moteur pose ses questions, une
+     * seule carte les rend toutes. Le choix multiple rend un tableau de chaines,
+     * le champ libre compagnon ecrase le choix simple et s'ajoute au choix
+     * multiple — c'est le pont qui lit le contenu, on ne reinvente rien.
+     */
+    Item {
+        id: askCard
+
+        property bool glassCard: true
+        property int glassRadius: win.cardRadius
+
+        // Les reponses en cours, par cle du schema. Elles sont remplacees d'un
+        // coup (jamais modifiees en place) : c'est ce qui previent les boutons.
+        property var answers: ({})
+
+        visible: hub.elicitationPending
+
+        anchors.horizontalCenter: parent.horizontalCenter
+        // Les deux cartes ne se marchent pas dessus : la demande d'autorisation
+        // tient la place basse, le questionnaire se pose au-dessus d'elle.
+        y: (permCard.visible ? permCard.y : pill.y) - height - 16
+
+        width: Math.min(win.width - 2 * win.inset, 470)
+        height: askCol.height + 16
+
+        onXChanged: glass.scheduleRefresh()
+        onYChanged: glass.scheduleRefresh()
+        onHeightChanged: glass.scheduleRefresh()
+        onVisibleChanged: glass.scheduleRefresh()
+
+        // Une nouvelle question remplace la reponse en cours : la carte ne doit
+        // pas trainer les boutions du questionnaire precedent.
+        property string formKey: hub.elicitationMessage + "|" + hub.elicitationFields.length
+        onFormKeyChanged: answers = ({})
+
+        function setAnswer(key, value) {
+            const next = Object.assign({}, askCard.answers);
+            next[key] = value;
+            askCard.answers = next;
+        }
+
+        function toggleAnswer(key, value) {
+            const picked = Array.isArray(askCard.answers[key]) ? askCard.answers[key].slice() : [];
+            const at = picked.indexOf(value);
+            if (at >= 0)
+                picked.splice(at, 1);
+            else
+                picked.push(value);
+            const next = Object.assign({}, askCard.answers);
+            next[key] = picked;
+            askCard.answers = next;
+        }
+
+        function picked(fieldKey, fieldKind, optionValue) {
+            const value = askCard.answers[fieldKey];
+            if (fieldKind === "multi")
+                return Array.isArray(value) && value.indexOf(optionValue) >= 0;
+            if (fieldKind === "boolean")
+                return value === true;
+            return value === optionValue;
+        }
+
+        /*
+         * Le contenu rendu conforme au schema : rien n'est obligatoire (le pont
+         * laisse required vide), donc une reponse partielle est une reponse.
+         */
+        function accepted() {
+            const content = {};
+            for (const field of hub.elicitationFields) {
+                const other = askCard.answers[field.otherKey || ""];
+                const value = askCard.answers[field.key];
+                if (field.kind === "multi") {
+                    const list = Array.isArray(value) ? value.slice() : [];
+                    if (other && String(other).length)
+                        list.push(String(other));
+                    if (list.length)
+                        content[field.key] = list;
+                } else if (field.kind === "boolean") {
+                    if (value !== undefined)
+                        content[field.key] = value === true;
+                } else if (field.kind === "number") {
+                    if (value !== undefined && String(value).length)
+                        content[field.key] = Number(value);
+                } else if (other && String(other).length) {
+                    content[field.key] = String(other);
+                } else if (value !== undefined && String(value).length) {
+                    content[field.key] = String(value);
+                }
+            }
+            hub.respondElicitation("accept", content);
+        }
+
+        Rectangle {
+            id: askFill
+
+            anchors.fill: parent
+            radius: win.cardRadius
+            color: "#8A1E2430"
+            border.color: "#40A8C8F0"
+            border.width: 1
+
+            layer.enabled: win.shadowOn
+            layer.samples: 4
+            layer.effect: CardShadow { intensity: 0.5 }
+        }
+
+        Column {
+            id: askCol
+            x: 12
+            y: 8
+            spacing: 8
+            width: askCard.width - 24
+
+            Text {
+                width: askCol.width
+                text: hub.elicitationMessage
+                      + (hub.askCount > 1 ? "  \u00b7  question " + hub.askIndex + " sur " + hub.askCount : "")
+                color: win.ink
+                font.family: win.uiFont
+                font.pixelSize: 13
+                font.bold: true
+                wrapMode: Text.WordWrap
+            }
+
+            Repeater {
+                model: hub.elicitationFields
+
+                delegate: Column {
+                    id: field
+
+                    required property var modelData
+
+                    readonly property var ask: modelData
+
+                    width: askCol.width
+                    spacing: 4
+
+                    Text {
+                        width: field.width
+                        text: field.ask.title
+                        color: win.ink
+                        font.family: win.uiFont
+                        font.pixelSize: 12
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        visible: (field.ask.help || "").length > 0
+                        width: field.width
+                        text: field.ask.help
+                        color: "#80e9eaee"
+                        font.family: win.uiFont
+                        font.pixelSize: 10
+                        wrapMode: Text.WordWrap
+                    }
+
+                    // Un choix (unique ou multiple) : une rangée de pastilles.
+                    Flow {
+                        visible: field.ask.options.length > 0 || field.ask.kind === "boolean"
+                        width: field.width
+                        spacing: 8
+
+                        Repeater {
+                            model: field.ask.options
+                            delegate: Rectangle {
+                                id: option
+
+                                required property var modelData
+
+                                readonly property bool on: askCard.picked(field.ask.key, field.ask.kind, modelData.value)
+                                readonly property bool skip: modelData.value === "__skip__"
+
+                                width: optionLabel.width + 22
+                                height: 26
+                                radius: 13
+                                color: on ? (skip ? "#46736F78" : "#743478DA") : "#24FFFFFF"
+                                border.color: on ? "#60FFFFFF" : "#22FFFFFF"
+                                border.width: 1
+
+                                Text {
+                                    id: optionLabel
+                                    anchors.centerIn: parent
+                                    // Le pont met le libelle dans le titre : le sentinel
+                                    // __skip__ ne doit jamais se lire tel quel.
+                                    text: option.skip ? "passer" : modelData.label
+                                    color: win.ink
+                                    font.family: win.uiFont
+                                    font.pixelSize: 12
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (field.ask.kind === "multi")
+                                            askCard.toggleAnswer(field.ask.key, modelData.value);
+                                        else
+                                            askCard.setAnswer(field.ask.key, modelData.value);
+                                    }
+                                }
+                            }
+                        }
+
+                        Repeater {
+                            model: field.ask.kind === "boolean" ? ["oui", "non"] : []
+                            delegate: Rectangle {
+                                required property var modelData
+
+                                readonly property bool on: askCard.answers[field.ask.key] === (modelData === "oui")
+
+                                width: boolLabel.width + 22
+                                height: 26
+                                radius: 13
+                                color: on ? "#743478DA" : "#24FFFFFF"
+                                border.color: "#22FFFFFF"
+                                border.width: 1
+
+                                Text {
+                                    id: boolLabel
+                                    anchors.centerIn: parent
+                                    text: modelData
+                                    color: win.ink
+                                    font.family: win.uiFont
+                                    font.pixelSize: 12
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: askCard.setAnswer(field.ask.key, modelData === "oui")
+                                }
+                            }
+                        }
+                    }
+
+                    // Le champ libre compagnon (q_i_other) : il ecrase le choix
+                    // simple, il s'ajoute au choix multiple — le pont le lit ainsi.
+                    Item {
+                        visible: (field.ask.otherKey || "").length > 0
+                        width: field.width
+                        height: field.ask.kind === "text" || field.ask.kind === "number" ? 0 : 24
+
+                        TextInput {
+                            id: otherInput
+                            anchors.fill: parent
                             color: win.ink
                             font.family: win.uiFont
                             font.pixelSize: 12
+                            text: ""
+                            onTextChanged: askCard.setAnswer(field.ask.otherKey, text)
+                            onAccepted: askCard.accepted()
                         }
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: hub.respondPermission(modelData.optionId)
+                        Text {
+                            anchors.fill: otherInput
+                            visible: !otherInput.text.length
+                            text: field.ask.otherTitle
+                            color: "#59e9eaee"
+                            font.family: win.uiFont
+                            font.pixelSize: 12
                         }
+                    }
+
+                    // Et le champ lui-meme, quand la question n'a pas de liste.
+                    TextInput {
+                        visible: field.ask.kind === "text" || field.ask.kind === "number"
+                        width: field.width
+                        height: 24
+                        color: win.ink
+                        font.family: field.ask.kind === "number" ? win.monoFont : win.uiFont
+                        font.pixelSize: 12
+                        onTextChanged: askCard.setAnswer(field.ask.key, text)
+                        onAccepted: askCard.accepted()
+                    }
+                }
+            }
+
+            Row {
+                spacing: 10
+                Text {
+                    text: "repondre"
+                    color: "#C0e9eaee"
+                    font.family: win.uiFont
+                    font.pixelSize: 11
+                    font.bold: true
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: askCard.accepted()
+                    }
+                }
+                Text {
+                    text: "laisser tomber"
+                    color: "#80e9eaee"
+                    font.family: win.uiFont
+                    font.pixelSize: 11
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: hub.respondElicitation("cancel", ({}))
                     }
                 }
             }

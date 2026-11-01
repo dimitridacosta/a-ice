@@ -13,10 +13,13 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QCryptographicHash>
+#include <QSet>
 #include <QSettings>
 #include <QTimer>
 #include <QUrl>
 #include <QWebSocket>
+
+#include <algorithm>
 
 namespace {
 
@@ -110,9 +113,14 @@ HubClient::HubClient(QObject *parent)
     // Le pont est ouvert : on se presente (initialize), puis le pont repond et
     // la suite de la jonction se pilote a travers les reponses.
     connect(bridge, &QWebSocket::connected, this, [this]() {
+        // Le questionnaire en mode formulaire est annonce des l'ouverture : sans
+        // lui le pont retombe sur un popup yes/no par option, et une question a
+        // choix multiple devient une rafale de popups.
         rpcSend(QStringLiteral("initialize"),
                 QJsonObject{{QStringLiteral("protocolVersion"), 1},
-                            {QStringLiteral("clientCapabilities"), QJsonObject{}}},
+                            {QStringLiteral("clientCapabilities"), QJsonObject{
+                                {QStringLiteral("elicitation"),
+                                 QJsonObject{{QStringLiteral("form"), QJsonObject{}}}}}}},
                 false);
     });
     connect(bridge, &QWebSocket::textMessageReceived, this, &HubClient::onBridgeText);
@@ -428,6 +436,7 @@ void HubClient::disconnectHub()
     ready = false;
     emit readyChanged();
     setGenerating(false);
+    clearPermissionAsks();
     instanceIdValue.clear();
     sessionIdValue.clear();
     // La liste des sessions suit : des lignes cliquables pointeraient sur un
@@ -703,11 +712,13 @@ void HubClient::onBridgeText(const QString &message)
     // Requete du pont (une methode ET un id) : c'est lui qui nous demande
     // quelque chose — en pratique une autorisation.
     if (hasMethod && hasId) {
-        if (msg.value(QStringLiteral("method")).toString()
-            == QStringLiteral("session/request_permission"))
+        const QString method = msg.value(QStringLiteral("method")).toString();
+        if (method == QStringLiteral("session/request_permission"))
             showPermissionRequest(msg);
+        else if (method == QStringLiteral("elicitation/create"))
+            showElicitationRequest(msg);
         else
-            respondPermission(QString());
+            rejectRequest(msg);   // une requete qu'on ne rend pas ne doit pas rester suspendue
         return;
     }
 
@@ -798,16 +809,12 @@ void HubClient::onBridgeNotification(const QJsonObject &msg)
         && params.value(QStringLiteral("sessionId")).toString() != sessionIdValue)
         return;
 
-    // Une autre main (la CLI Z Code) a already tranche la demande : on retire
-    // la notre sans repondre — le pont a deja sa reponse.
+    // Une autre main (la CLI Z Code) a deja tranche la demande : on retire la
+    // notre sans repondre — le pont a deja sa reponse. Le kind n'est pas que
+    // « permission » : un questionnaire tranche de meme.
     if (method == QStringLiteral("$/zcode/ask_settled")) {
-        if (permissionRpcId >= 0 && params.value(QStringLiteral("kind")).toString() == QStringLiteral("permission")) {
-            permissionRpcId = -1;
-            permissionToolValue.clear();
-            permissionDetailValue.clear();
-            permissionOptionsValue.clear();
-            emit permissionChanged();
-        }
+        settleAsk(params.value(QStringLiteral("kind")).toString(),
+                  params.value(QStringLiteral("toolCallId")).toString());
         return;
     }
 
@@ -965,6 +972,8 @@ void HubClient::endTurn(const QString &stopReason)
     setGenerating(false);
     retryPromptText.clear();
     promptRecoveries = 0;
+    // Un tour clos n'a plus de demande en cours : le moteur decline ce qui reste.
+    clearPermissionAsks();
     rememberSession();
     sessionStatusLine();
     emit turnEnded(stopReason);
@@ -972,12 +981,99 @@ void HubClient::endTurn(const QString &stopReason)
 
 // --- autorisations ---------------------------------------------------------
 
+namespace {
+
+/*
+ * L'ordre des boutons : les autorisations a gauche (la premiere est le choix par
+ * defaut, Entrée), les refus a droite. Les kinds ne sont pas les quatre kinds ACP
+ * stricts : le pont connait aussi allow_project et allow_session (chez ZCode), et
+ * un filtre strict les ferait disparaitre.
+ */
+int optionRank(const QString &kind)
+{
+    if (kind.startsWith(QLatin1String("allow")))
+        return 0;
+    if (kind.startsWith(QLatin1String("reject")))
+        return 2;
+    return 1;
+}
+
+QString compactInput(const QJsonObject &toolCall)
+{
+    const QJsonValue raw = toolCall.contains(QStringLiteral("rawInput"))
+                             ? toolCall.value(QStringLiteral("rawInput"))
+                             : QJsonValue::Undefined;
+    const QJsonValue shown = raw.isUndefined() ? QJsonValue(toolCall) : raw;
+    QString text = QString::fromUtf8(
+        QJsonDocument(shown.toObject()).toJson(QJsonDocument::Compact));
+    // Une entree d'outil peut faire des milliers de caracteres : la carte en
+    // porte le debut, et le texte entier reste accessible ailleurs.
+    if (text.size() > 900)
+        text = text.left(900) + QStringLiteral(" …");
+    return text;
+}
+
+// Le moteur joint parfois deja la sortie de son terminal dans la demande.
+QString terminalOutput(const QJsonObject &toolCall)
+{
+    const QJsonObject meta = toolCall.value(QStringLiteral("_meta")).toObject();
+    const QString data = meta.value(QStringLiteral("terminal_output")).toObject()
+                            .value(QStringLiteral("data")).toString();
+    if (data.isEmpty())
+        return QString();
+    QString text = data.trimmed();
+    if (text.size() > 600)
+        text = text.right(600) + QStringLiteral(" …");
+    return text;
+}
+
+} // namespace
+
+int HubClient::askCount() const
+{
+    return permissionAsks.size() + elicitationAsks.size();
+}
+
+int HubClient::askIndex() const
+{
+    // La carte montree est la premiere de la file : le compteur dit sur combien.
+    return askCount() > 0 ? 1 : 0;
+}
+
+QString HubClient::permissionTool() const
+{
+    return permissionAsks.isEmpty() ? QString() : permissionAsks.first().tool;
+}
+
+QString HubClient::permissionKind() const
+{
+    return permissionAsks.isEmpty() ? QString() : permissionAsks.first().toolKind;
+}
+
+QString HubClient::permissionDetail() const
+{
+    return permissionAsks.isEmpty() ? QString() : permissionAsks.first().detail;
+}
+
+QString HubClient::permissionOutput() const
+{
+    return permissionAsks.isEmpty() ? QString() : permissionAsks.first().output;
+}
+
+QVariantList HubClient::permissionOptions() const
+{
+    return permissionAsks.isEmpty() ? QVariantList() : permissionAsks.first().options;
+}
+
 void HubClient::showPermissionRequest(const QJsonObject &msg)
 {
-    permissionRpcId = msg.value(QStringLiteral("id")).toVariant().toLongLong();
+    AskRequest ask;
+    ask.rpcId = msg.value(QStringLiteral("id")).toVariant().toLongLong();
 
     const QJsonObject params = msg.value(QStringLiteral("params")).toObject();
     const QJsonObject toolCall = params.value(QStringLiteral("toolCall")).toObject();
+
+    ask.toolCallId = toolCall.value(QStringLiteral("toolCallId")).toString();
 
     QString tool = toolCall.value(QStringLiteral("title")).toString();
     if (tool.isEmpty()) {
@@ -986,33 +1082,88 @@ void HubClient::showPermissionRequest(const QJsonObject &msg)
                    .value(QStringLiteral("toolName"))
                    .toString();
     }
-    permissionToolValue = tool.isEmpty() ? QStringLiteral("outil") : tool;
+    if (tool.isEmpty())
+        tool = toolCall.value(QStringLiteral("kind")).toString();
+    ask.tool = tool.isEmpty() ? QStringLiteral("outil") : tool;
 
-    const QJsonValue raw = toolCall.contains(QStringLiteral("rawInput"))
-                             ? toolCall.value(QStringLiteral("rawInput"))
-                             : QJsonValue(toolCall);
-    permissionDetailValue = QString::fromUtf8(
-        QJsonDocument(raw.toObject()).toJson(QJsonDocument::Compact)).left(400);
+    ask.toolKind = toolCall.value(QStringLiteral("kind")).toString();
+    ask.detail = compactInput(toolCall);
+    ask.output = terminalOutput(toolCall);
 
-    permissionOptionsValue.clear();
     const QJsonArray options = params.value(QStringLiteral("options")).toArray();
     for (const QJsonValue value : options) {
         const QJsonObject option = value.toObject();
+        const QString kind = option.value(QStringLiteral("kind")).toString();
         QVariantMap row;
         row.insert(QStringLiteral("optionId"), option.value(QStringLiteral("optionId")).toString());
         row.insert(QStringLiteral("name"), option.value(QStringLiteral("name")).toString());
-        row.insert(QStringLiteral("kind"), option.value(QStringLiteral("kind")).toString());
-        permissionOptionsValue.append(row);
+        row.insert(QStringLiteral("kind"), kind);
+        row.insert(QStringLiteral("allow"), optionRank(kind) == 0);
+        ask.options.append(row);
     }
+
+    // Le pont ne classe pas ses options : c'est la carte qui les groupe.
+    std::stable_sort(ask.options.begin(), ask.options.end(), [](const QVariant &a, const QVariant &b) {
+        return optionRank(a.toMap().value(QStringLiteral("kind")).toString())
+             < optionRank(b.toMap().value(QStringLiteral("kind")).toString());
+    });
+
+    permissionAsks.append(ask);
 
     setStatus(QStringLiteral("autorisation demandee"));
     emit permissionChanged();
 }
 
+/*
+ * Le pont vient de trancher ailleurs (la CLI Z Code, un autre client, ou le
+ * moteur lui-meme) : la carte se retire sans repondre. Le `kind` de la demande
+ * n'est pas seulement « permission » : un questionnaire tranche de meme.
+ */
+void HubClient::settleAsk(const QString &kind, const QString &toolCallId)
+{
+    bool changed = false;
+
+    auto matches = [&toolCallId](const AskRequest &ask) {
+        return !ask.toolCallId.isEmpty() && ask.toolCallId == toolCallId;
+    };
+
+    if (kind == QLatin1String("permission")) {
+        for (int i = 0; i < permissionAsks.size(); ++i) {
+            if (toolCallId.isEmpty() || matches(permissionAsks.at(i))) {
+                permissionAsks.removeAt(i);
+                changed = true;
+                break;
+            }
+        }
+    } else if (kind == QLatin1String("elicitation")) {
+        for (int i = 0; i < elicitationAsks.size(); ++i) {
+            if (toolCallId.isEmpty() || matches(elicitationAsks.at(i))) {
+                elicitationAsks.removeAt(i);
+                changed = true;
+                break;
+            }
+        }
+    }
+
+    if (changed)
+        emit permissionChanged();
+}
+
+void HubClient::clearPermissionAsks()
+{
+    if (permissionAsks.isEmpty() && elicitationAsks.isEmpty())
+        return;
+    permissionAsks.clear();
+    elicitationAsks.clear();
+    emit permissionChanged();
+}
+
 void HubClient::respondPermission(const QString &optionId)
 {
-    if (permissionRpcId < 0)
+    if (permissionAsks.isEmpty())
         return;
+
+    const AskRequest ask = permissionAsks.takeFirst();
 
     QJsonObject outcome;
     if (optionId.isEmpty())
@@ -1024,16 +1175,218 @@ void HubClient::respondPermission(const QString &optionId)
 
     QJsonObject reply;
     reply.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
-    reply.insert(QStringLiteral("id"), permissionRpcId);
+    reply.insert(QStringLiteral("id"), static_cast<qint64>(ask.rpcId));
     reply.insert(QStringLiteral("result"), QJsonObject{{QStringLiteral("outcome"), outcome}});
 
     bridge->sendTextMessage(QJsonDocument(reply).toJson());
 
-    permissionRpcId = -1;
-    permissionToolValue.clear();
-    permissionDetailValue.clear();
-    permissionOptionsValue.clear();
     emit permissionChanged();
+}
+
+/*
+ * Le raccourci clavier du refus : Échap doit porter le refus du moteur s'il en
+ * propose un, pas une annulation qui le laisse choisir autre chose.
+ */
+QString HubClient::rejectOption() const
+{
+    if (permissionAsks.isEmpty())
+        return QString();
+    for (const QVariant &value : permissionAsks.first().options) {
+        const QVariantMap option = value.toMap();
+        if (optionRank(option.value(QStringLiteral("kind")).toString()) == 2)
+            return option.value(QStringLiteral("optionId")).toString();
+    }
+    return QString();
+}
+
+// --- questionnaires (elicitation/create, mode form) ------------------------
+
+namespace {
+
+/*
+ * Les champs du formulaire, dans l'ordre du schema. Le schema n'autorise que des
+ * types primitifs : chaine (avec oneOf/enum = choix unique), tableau (anyOf =
+ * choix multiple), booleen, nombre — et le champ libre compagnon q_i_other,
+ * qui n'est pas une question de plus mais la reponse ecrite a la question qui
+ * la precede (elle ecrase le choix simple, elle s'ajoute au choix multiple).
+ */
+QVariantList formFields(const QJsonObject &schema)
+{
+    QVariantList fields;
+    const QJsonObject properties = schema.value(QStringLiteral("properties")).toObject();
+
+    QSet<QString> required;
+    const QJsonArray requiredList = schema.value(QStringLiteral("required")).toArray();
+    for (const QJsonValue value : requiredList)
+        required.insert(value.toString());
+
+    // QJsonObject trie ses cles : q_i vient avant q_i_other, qui suit sa question.
+    const QStringList keys = properties.keys();
+    for (const QString &key : keys) {
+        if (key.endsWith(QStringLiteral("_other")))
+            continue;
+
+        const QJsonObject prop = properties.value(key).toObject();
+        const QString type = prop.value(QStringLiteral("type")).toString();
+        QVariantList options;
+        QString kind = QStringLiteral("text");
+
+        QJsonArray listed;
+        if (type == QLatin1String("array")) {
+            kind = QStringLiteral("multi");
+            listed = prop.value(QStringLiteral("items")).toObject()
+                        .value(QStringLiteral("anyOf")).toArray();
+        } else if (type == QLatin1String("string")
+                   && (prop.contains(QStringLiteral("oneOf"))
+                       || prop.contains(QStringLiteral("enum")))) {
+            kind = QStringLiteral("single");
+            listed = prop.contains(QStringLiteral("oneOf"))
+                        ? prop.value(QStringLiteral("oneOf")).toArray()
+                        : prop.value(QStringLiteral("enum")).toArray();
+        } else if (type == QLatin1String("boolean")) {
+            kind = QStringLiteral("boolean");
+        } else if (type == QLatin1String("number") || type == QLatin1String("integer")) {
+            kind = QStringLiteral("number");
+        }
+
+        for (const QJsonValue value : listed) {
+            QVariantMap row;
+            if (value.isString()) {
+                row.insert(QStringLiteral("value"), value.toString());
+                row.insert(QStringLiteral("label"), value.toString());
+            } else {
+                const QJsonObject option = value.toObject();
+                QString label = option.value(QStringLiteral("title")).toString();
+                const QString constant = option.value(QStringLiteral("const")).toString();
+                if (label.isEmpty())
+                    label = constant;
+                row.insert(QStringLiteral("value"), constant);
+                row.insert(QStringLiteral("label"), label);
+                row.insert(QStringLiteral("description"),
+                           option.value(QStringLiteral("description")).toString());
+            }
+            options.append(row);
+        }
+
+        QVariantMap field;
+        field.insert(QStringLiteral("key"), key);
+        QString title = prop.value(QStringLiteral("title")).toString();
+        field.insert(QStringLiteral("title"), title.isEmpty() ? key : title);
+        field.insert(QStringLiteral("help"), prop.value(QStringLiteral("description")).toString());
+        field.insert(QStringLiteral("kind"), kind);
+        field.insert(QStringLiteral("options"), options);
+        field.insert(QStringLiteral("required"), required.contains(key));
+
+        const QString companion = key + QStringLiteral("_other");
+        if (properties.contains(companion)) {
+            field.insert(QStringLiteral("otherKey"), companion);
+            field.insert(QStringLiteral("otherTitle"),
+                         properties.value(companion).toObject()
+                             .value(QStringLiteral("title")).toString());
+        }
+
+        fields.append(field);
+    }
+
+    return fields;
+}
+
+// Le contenu rendu par la carte : des valeurs primitives, et des tableaux de
+// chaines pour les choix multiples.
+QJsonValue contentToJson(const QVariant &value)
+{
+    const int type = value.userType();
+    if (type == QMetaType::QVariantList || type == QMetaType::QStringList) {
+        QJsonArray array;
+        for (const QVariant &item : value.toList())
+            array.append(item.toString());
+        return array;
+    }
+    if (type == QMetaType::Bool)
+        return value.toBool();
+    if (type == QMetaType::Int || type == QMetaType::LongLong || type == QMetaType::Double
+        || type == QMetaType::UInt || type == QMetaType::ULongLong)
+        return value.toDouble();
+    return value.toString();
+}
+
+} // namespace
+
+QString HubClient::elicitationMessage() const
+{
+    return elicitationAsks.isEmpty() ? QString() : elicitationAsks.first().tool;
+}
+
+QVariantList HubClient::elicitationFields() const
+{
+    return elicitationAsks.isEmpty() ? QVariantList() : elicitationAsks.first().fields;
+}
+
+void HubClient::showElicitationRequest(const QJsonObject &msg)
+{
+    AskRequest ask;
+    ask.rpcId = msg.value(QStringLiteral("id")).toVariant().toLongLong();
+
+    const QJsonObject params = msg.value(QStringLiteral("params")).toObject();
+    ask.toolCallId = params.value(QStringLiteral("toolCallId")).toString();
+
+    // Le message du pont ne repete pas les questions : chaque question est deja
+    // le titre de son champ. On le garde comme bandeau de la carte.
+    ask.tool = params.value(QStringLiteral("message")).toString();
+    ask.toolKind = params.value(QStringLiteral("mode")).toString();
+    ask.fields = formFields(params.value(QStringLiteral("requestedSchema")).toObject());
+
+    elicitationAsks.append(ask);
+
+    setStatus(QStringLiteral("le moteur attend une reponse"));
+    emit permissionChanged();
+}
+
+void HubClient::respondElicitation(const QString &action, const QVariantMap &content)
+{
+    if (elicitationAsks.isEmpty())
+        return;
+
+    const AskRequest ask = elicitationAsks.takeFirst();
+
+    QJsonObject result;
+    result.insert(QStringLiteral("action"), action.isEmpty() ? QStringLiteral("cancel") : action);
+    if (result.value(QStringLiteral("action")).toString() == QStringLiteral("accept")) {
+        QJsonObject shaped;
+        for (auto it = content.constBegin(); it != content.constEnd(); ++it)
+            shaped.insert(it.key(), contentToJson(it.value()));
+        if (!shaped.isEmpty())
+            result.insert(QStringLiteral("content"), shaped);
+    }
+
+    QJsonObject reply;
+    reply.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+    reply.insert(QStringLiteral("id"), static_cast<qint64>(ask.rpcId));
+    reply.insert(QStringLiteral("result"), result);
+
+    bridge->sendTextMessage(QJsonDocument(reply).toJson());
+
+    emit permissionChanged();
+}
+
+/*
+ * Une requete du pont que ce corps ne sait pas rendre : on repond quand meme,
+ * sinon le moteur reste suspendu sur une demande que personne ne fermera.
+ */
+void HubClient::rejectRequest(const QJsonObject &msg)
+{
+    QJsonObject error;
+    error.insert(QStringLiteral("code"), -32601);
+    error.insert(QStringLiteral("message"),
+                 QStringLiteral("a-ice ne rend pas cette requete : ")
+                     + msg.value(QStringLiteral("method")).toString());
+
+    QJsonObject reply;
+    reply.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+    reply.insert(QStringLiteral("id"), msg.value(QStringLiteral("id")));
+    reply.insert(QStringLiteral("error"), error);
+
+    bridge->sendTextMessage(QJsonDocument(reply).toJson());
 }
 
 // --- etats ----------------------------------------------------------------

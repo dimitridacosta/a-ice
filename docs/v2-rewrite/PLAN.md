@@ -40,7 +40,7 @@ maintenant le hub (instance réutilisée ou incubée, session neuve, chunks qui 
 dans la carte agent, permissions en boutons). Garde vérifiée : `session/new` qui rend
 une session déjà live est refusée au profit d'une session neuve.*
 
-### M3 — Intégration
+### M3 — Intégration — **fait (reste le retour de l'œil)**
 - Markdown parsé **hors UI thread** (QTextDocument), historique conversation, config/SOUL, récupération progressive des features de `main`.
 
 *Résultat partiel (2026-11-01) : la gestion de session ACP est en place — session
@@ -76,6 +76,46 @@ cliquables vers un pont mort (la liste se vide a la coupure, se retrace a
 openSessionReady). Piece 3 relue contre le tool de reference
 zcode-emissary.mjs : memes cles (`hubUrl`, `token`), migration ecrite une
 seule fois, repli zcode-acp correct — rien a changer.
+
+M3 fait (2026-11-01, les trois pieces portees) : la note
+[M3-md-permissions-questions.md](M3-md-permissions-questions.md) dit ce que le
+protocole rend, et le corps le rend.
+
+1. **Markdown par blocs (M3a)** — `poc/Markdown.cpp` : decoupage a la source
+   (fence, titre, liste, cases, citation, tableau, filet, paragraphe), un
+   fragment HTML par bloc, parsing dans le QThreadPool, cache par empreinte
+   (une bulle figee ne se re-parse pas). La carte rend une `Column` de blocs
+   avec l'air de la v1 (5 px autour d'un paragraphe et d'une liste, 14/7 autour
+   d'un titre, 0 au premier et au dernier bloc), le fond des blocs de code en
+   `Rectangle`, la barre de citation et le filet dessines, le code en ligne
+   replace en span (Qt le rendait en texte nu). Mesure live : une reponse a
+   8 blocs rendue, carte de 251 px dans une fenetre de 460 — elle epouse son
+   texte. Decoupage verifie par `tests/test_md` (44 verifications).
+2. **Permissions (M3b)** — une file de demandes (la carte porte « demande 1 sur N »),
+   les autorisations a gauche (Entrée prend la premiere), les refus a droite
+   (Échap prend l'option de refus du moteur, jamais un `cancelled` invente),
+   l'entree de l'outil en monospace coupee a trois lignes avec « deployer », la
+   sortie de terminal quand le moteur la joint, et `$/zcode/ask_settled` qui
+   retire la carte quel que soit le `kind` (permission comme elicitation).
+   Mesure live : une vraie demande d'execution (`rm -rf`) montee en carte de 444 x 104.
+3. **Questions a choix (M3c)** — capacite `elicitation.form` annoncee a
+   `initialize`, carte formulaire par question : choix unique, choix multiple
+   (reponse en tableau de chaines), booleen, champ nombre, champ libre
+   compagnon `q_i_other` (il ecrase le choix simple, s'ajoute au choix multiple),
+   et le sentinel `__skip__` rendu « passer ». Reponse `accept` + contenu
+   conforme, `cancel` a l'Échap. Mesure live : `AskUserQuestion` du moteur rendu
+   en une seule carte (q_0 single).
+
+Vu du terminal (mesure, pas un oeil) : la fenetre ne swap pas de frame depuis
+l'agent, donc les cartes se dessinent mais ne se regardent pas. Ce qui suit
+attend le retour de Dimitri : le rendu a l'œil du markdown (tableaux, listes
+imbriquees), les clics et le clavier sur les cartes de permission et de
+question. Ce qui n'a pas pu etre verifie : que notre reponse gagne la course —
+le pont diffuse la demande a toutes les connexions de l'instance et garde la
+première réponse, et l'agent de voix (`zcode-emissary.mjs`) est connecte a la meme
+instance : c'est lui qui a tranche la question avant nous. Pour driver un tour
+depuis a-ice, il faut donc soit couper l'agent de voix, soit accepter de partager
+la main.
 
 Reste pour M4 : polish du corps — ombres, dégradés, animations d'entrée, thème
 complet, doc utilisateur ; rejuger les acquis d'origin/v2 (layer-shell par
