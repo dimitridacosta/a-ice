@@ -64,8 +64,12 @@ tour close par le `turnState` du pont. Voir la dernière section de
    zcode-acp une fois pour toutes à son premier lancement (bloc écrit, jamais
    réécrit), et le tool zcode-emissary le lit en premier (zcode-acp en repli).
 
-Reste en M3 : les trois piéces validées au build + un tour réel (end_turn), les
-clics de la carte-liste et le changement d'instance restent à passer à l'œil.
+Reste en M3 : le retour de l'œil — un tour réel (end_turn), les clics de la
+carte-liste et le changement d'instance. Revue faite par l'émissaire (2026-11-01) :
+les trois pieces relues ligne à ligne, un vrai bug corrigé au passage — le
+gestionnaire `onParsed` du parseur était branché sur les `Connections` du hub,
+qui ne porte pas ce signal : le html des bulles fermées ne serait jamais
+revenu (commit 1c4769c, `Connections { target: markdown }` dedicate).
 
 Reste pour M4 : polish du corps — ombres, dégradés, animations d'entrée, thème
 complet, doc utilisateur ; rejuger les acquis d'origin/v2 (layer-shell par
