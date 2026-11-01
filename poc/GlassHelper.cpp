@@ -188,7 +188,7 @@ bool GlassHelper::isInside(const QQuickItem *item, const QQuickItem *ancestor)
 }
 
 void GlassHelper::collect(QQuickItem *item, QQuickItem *sceneRoot, QVector<Card> &out,
-                          int &excluded) const
+                          int &excluded, int &candidates) const
 {
     if (!item)
         return;
@@ -199,6 +199,10 @@ void GlassHelper::collect(QQuickItem *item, QQuickItem *sceneRoot, QVector<Card>
         : QRectF();
 
     for (QQuickItem *child : item->childItems()) {
+        if (child->isVisible() && child->property("glassCard").toBool()) {
+            ++candidates;
+        }
+
         if (child->isVisible() && child->property("glassCard").toBool()
             && child->width() > kMinCardSide && child->height() > kMinCardSide) {
 
@@ -232,7 +236,7 @@ void GlassHelper::collect(QQuickItem *item, QQuickItem *sceneRoot, QVector<Card>
                 out.push_back(c);
             }
         }
-        collect(child, sceneRoot, out, excluded);
+        collect(child, sceneRoot, out, excluded, candidates);
     }
 }
 
@@ -245,7 +249,8 @@ void GlassHelper::applyRegions()
     QVector<Card> cards;
     cards.reserve(64);
     int excluded = 0;
-    collect(sceneRoot, sceneRoot, cards, excluded);
+    int candidates = 0;
+    collect(sceneRoot, sceneRoot, cards, excluded, candidates);
 
     QRegion region;
     for (const Card &c : cards)
@@ -265,11 +270,20 @@ void GlassHelper::applyRegions()
     if (m_cards != int(cards.size())) {
         m_cards = int(cards.size());
         emit cardsChanged();
-        if (qEnvironmentVariable("AICE_DEBUG") == "1") {
-            for (const Card &c : cards)
-                fprintf(stderr, "a-ice M1 : carte verre %dx%d @ %d,%d r=%d alpha=%.2f\n",
-                        c.rect.width(), c.rect.height(), c.rect.x(), c.rect.y(), c.radius, c.alpha);
-        }
+    }
+
+    // Diagnostic : l etat complet du verre. Le compte de cartes ne suffit pas —
+    // une carte ecartee pour sa taille, son clip ou son alpha laisse alors
+    // aucune trace. Le candidat, c est ce qui se dit carte de verre.
+    const long signature = long(candidates) * 1000000L + long(excluded) * 1000L
+                           + long(cards.size());
+    if (qEnvironmentVariable("AICE_DEBUG") == "1" && signature != m_verreShown) {
+        m_verreShown = signature;
+        fprintf(stderr, "a-ice M1 : verre %d carte(s) sur %d candidate(s), %d excluse(s)\n",
+                int(cards.size()), candidates, excluded);
+        for (const Card &c : cards)
+            fprintf(stderr, "a-ice M1 : carte verre %dx%d @ %d,%d r=%d alpha=%.2f\n",
+                    c.rect.width(), c.rect.height(), c.rect.x(), c.rect.y(), c.radius, c.alpha);
     }
 
     // Anti-clignotement : rien appliquer si la region est identique.
@@ -304,6 +318,13 @@ void GlassHelper::grabShot(const QString &path)
         painter.setBrush(Qt::NoBrush);
         for (const Card &c : m_lastCards)
             painter.drawRoundedRect(c.rect, c.radius, c.radius);
+
+        // La capture est le moment ou lire l etat du verre : sans ces lignes on ne
+        // sait pas si les bulles y entrent vraiment.
+        fprintf(stderr, "a-ice M1 : capture sur %d carte(s) de verre\n", int(m_lastCards.size()));
+        for (const Card &c : m_lastCards)
+            fprintf(stderr, "a-ice M1 : carte verre capture %dx%d @ %d,%d r=%d alpha=%.2f\n",
+                    c.rect.width(), c.rect.height(), c.rect.x(), c.rect.y(), c.radius, c.alpha);
     }
     painter.end();
 

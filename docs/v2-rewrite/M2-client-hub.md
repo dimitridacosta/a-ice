@@ -111,9 +111,6 @@ existe, sinon `remote` de `~/.config/zcode-acp/config.json` (`hubHost`, `hubPort
 
 ## Ce que M2 ne fait pas encore (M3)
 
-- **Reprendre la conversation** : la GUI mint une session neuve à chaque lancement,
-  l'historique reste en mémoire. Le rechargeage (`session/load`) est ce qui permet
-  au pont de renvoyer à ce client la demande en cours — à brancher avec l'historique.
 - Markdown parsé hors du thread de l'UI (`QTextDocument`).
 - Multi-sessions, multi-instances, choix du modèle (`session/set_config_option`).
 - Le bloc `hub` dans `~/.config/a-ice/config.json` est lu s'il existe, mais la source
@@ -121,3 +118,77 @@ existe, sinon `remote` de `~/.config/zcode-acp/config.json` (`hubHost`, `hubPort
   M3 (une seule source de vérité).
 - Le badge de mesures et `AICE_*` restent des outils du POC : à ne pas garder tels
   quels dans la vraie GUI.
+
+---
+
+## Séance du 2026-11-01 — la gestion de session (le corps est branché sur un moteur)
+
+C'est la première tranche de M3 : le corps ne ment plus une session neuve à chaque
+lancement, il reprend celle du workspace et il survit aux sessions périmées du hub.
+
+### La session vit dans QSettings, pas dans la fenetre
+
+Cle `hub/session-<16 premiers octets du MD5 du chemin du workspace>` (le chemin tel
+que le hub le connait, donc la meme cle de la box ou de l'hote). On ne l'écrit
+qu'après un tour qui a répondu : une session stockée est une session qui a prouvé
+qu'elle est vivante. Au lancement suivant, après `initialize`, le client appelle
+`session/load` sur cette session plutôt que `session/new`.
+
+Le pont **rejoue l'historique** pendant la requête `session/load`, avant même d'y
+répondre : des `session/update` en `user_message_chunk` et `agent_message_chunk`,
+chacun portant un `messageId`. Le corps n'a donc aucun historique à stocker lui-meme.
+Mesuré sur la session `889055bb…` : sept messages rejoués, et un tour posé après la
+reprise qui répond « la dernière chose demandée » — le moteur a bien sa mémoire.
+
+### Le premier `session/new` rend un cadavre
+
+Le hub relie la connexion au dernier fil qu'il tient sur l'instance, même quand ce
+fil n'existe plus côté backend. Le premier `session/new` nous a rendu `444aced8…`
+lancé après lancé, et le prompt répond : `code -32603`, `data.details` : « session
+444aced8… no longer exists in the backend — this thread cannot be recovered ; start
+a new thread ». Un second `session/new`, lui, ment une session vivante.
+
+Le client n'en meurt plus : sur ce motif précis il mint une session neuve et relance
+le tour (deux fois par tour au plus). Mesuré : échec sur la session reprise →
+session neuve `4aa5c0fd…` → `end_turn` avec ses chunks. Le détail est la : le pont
+met son vrai motif dans `error.data` (chaine ou `{ details }`), pas dans
+`error.message`, qui ne dit que « Internal error ».
+
+### La fin de tour vient du `turnState` du pont
+
+La réponse JSON-RPC de `session/prompt` peut ne jamais parvenir au client : un client
+tué en plein tour (SIGTERM) laisse le pont muet sur cette requête, et le corps reste
+alors « generating » pour toujours — la barre ne peut plus prompter. Le hub, lui, a
+bien fini : `/api/instances` passe la session de `running` à `idle`. Mesuré sur les
+runs 4 à 9 : le prompt n'a jamais été acquitté.
+
+Le pont signale l'état de tour par `$/zcode`/`_zcode/turnState` (l'agent le déclare
+dans `agentCapabilities._meta.zcode.turnState`) : `{ sessionId, running, usage }`.
+Le corps close le tour dès `running: false` ; la réponse JSON-RPC, quand elle vient,
+passe avant elle dans les faits et ne fait que gagner la course. Mesuré : « tour
+termine par le pont » → `end_turn`, 17 chunks, 486 caractères.
+
+### Cote bulles
+
+- **Un `messageId` = une bulle** : un chunk qui s'ajoute au même message ne rouvre
+  pas une carte, et le replay de `session/load` ouvre une bulle par message reprise
+  (dans l'ordre du plus vieux au plus récent, le modèle étant tenu du plus récent au
+  plus vieux).
+- Le `user_message_chunk` est traité comme l'`agent_message_chunk` : notre propre
+  message, déjà posé par `send()`, n'est pas dupliqué quand le pont nous le renvoie.
+- La carte du hub porte un bouton « conversation neuve » : il vide le modèle et
+  oublie la session stockée (sinon on resterait bloqué sur une conversation usée).
+
+### Diagnostic ajouté (GlassHelper)
+
+`AICE_DEBUG=1` affiche « verre N carte(s) sur M candidate(s), K excluse(s) » et la
+capture entoure les cartes avec leurs dimensions. Sans le compte de **candidats**,
+une carte écartée pour sa taille, son clip ou son alpha ne laisse aucune trace.
+
+**Piège de mesure retrouvé** : un run lancé depuis le terminal de l'agent ne swap
+**aucune frame** (les lignes `frame time` n'apparaissent pas) — donc le verre ne se
+recalcule pas après l'apparition d'une bulle, et la capture ne montre que le badge,
+la carte du hub et la barre comme cartes de verre. Ce n'est pas l'état réel : le
+même run en mode `AICE_STRESS` compte bien huit cartes de bulles dans le verre,
+ancrées en bas. Aucune conclusion sur le verre ne doit être tirée d'un run sans
+frames — à vérifier à l'œil sur une vraie fenêtre.

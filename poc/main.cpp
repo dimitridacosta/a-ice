@@ -56,9 +56,12 @@ int main(int argc, char *argv[])
     // jonction ou un tour qui ne repond pas ne laisse aucune trace.
     int chunks = 0;
     int chars = 0;
-    QObject::connect(&hub, &HubClient::chunkReceived, &app, [&chunks, &chars](const QString &text) {
+    QObject::connect(&hub, &HubClient::chunkReceived, &app,
+                     [&chunks, &chars](const QString &messageId, const QString &role, const QString &text) {
+        (void) messageId;
         ++chunks;
         chars += text.size();
+        (void) role;
     });
     QObject::connect(&hub, &HubClient::failed, &app, [](const QString &message) {
         fprintf(stderr, "a-ice-m1 : hub %s\n", qUtf8Printable(message));

@@ -3,9 +3,18 @@
 // Le corps ne connait qu'une chose : le protocole du hub.
 //   HTTP  GET   /api/instances                 → l'instance live du workspace
 //   HTTP  POST  /api/instances {workspacePath} → incubation si aucune instance live
-//   WS    /acp?instance=<id>                   → initialize, session/new, session/prompt,
-//                                               session/update, session/request_permission
+//   WS    /acp?instance=<id>                   → initialize, session/load (reprise) ou
+//                                               session/new, session/prompt, session/update,
+//                                               session/request_permission
 // Tout est asynchrone : le POC reste libre de dessiner pendant que le tour tourne.
+//
+// Gestion de session (M3) :
+//   - la session vecue est gardeée dans QSettings (cle par workspace) : au lancement
+//     suivant on la charge par session/load, et le pont rejoue l historique.
+//   - le premier session/new d une connexion herite parfois du dernier fil lie a
+//     l instance, meme perime : un prompt qui repond « no longer exists in the
+//     backend » n y fait pas mourir le corps, il mint une session neuve relance le
+//     tour.
 
 #pragma once
 
@@ -23,6 +32,7 @@ class HubClient : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(bool ready READ isReady NOTIFY readyChanged)
+    Q_PROPERTY(bool resumed READ isResumed NOTIFY resumedChanged)
     Q_PROPERTY(bool generating READ isGenerating NOTIFY generatingChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QString instanceId READ instanceId NOTIFY statusChanged)
@@ -37,6 +47,7 @@ public:
     explicit HubClient(QObject *parent = nullptr);
 
     bool isReady() const { return ready; }
+    bool isResumed() const { return resumed; }
     bool isGenerating() const { return generating; }
     bool isPermissionPending() const { return permissionRpcId >= 0; }
 
@@ -62,12 +73,18 @@ public:
     // Reponse a une demande d'autorisation : optionId choisi, ou annule.
     Q_INVOKABLE void respondPermission(const QString &optionId);
 
+    // Repartir d une conversation vierge : on oublie la session gardeée.
+    Q_INVOKABLE void startFreshConversation();
+
 signals:
-    void chunkReceived(const QString &text);
+    // Un chunk, avec son message : le meme messageId designe la meme bulle (le
+    // texte qui coule), un messageId nouveau ouvre une bulle (reprise d historique).
+    void chunkReceived(const QString &messageId, const QString &role, const QString &text);
     void turnEnded(const QString &stopReason);
     void failed(const QString &message);
 
     void readyChanged();
+    void resumedChanged();
     void generatingChanged();
     void statusChanged();
     void toolLineChanged();
@@ -82,12 +99,20 @@ private:
     void requestInstances();
     void createInstance();
     void openBridge();
+    void startSession();
+    void mintSession();
+    void forgetStoredSession();
+    void rememberSession();
+    QString sessionKey() const;
+    void restoreStoredSession();
     void rpcSend(const QString &method, const QJsonObject &params, bool promptTurn);
     void onBridgeText(const QString &message);
     void onBridgeNotification(const QJsonObject &msg);
     void showPermissionRequest(const QJsonObject &msg);
     void verifySessionFreshness();
     void openSessionReady();
+    void endTurn(const QString &stopReason);
+    void sessionStatusLine();
     void onBridgeError();
     void setStatus(const QString &text);
     void fail(const QString &what);
@@ -111,6 +136,10 @@ private:
     QString permissionDetailValue;
     QVariantList permissionOptionsValue;
 
+    QString storedSessionValue;  // session vecue, retrouvee dans QSettings
+    QString retryPromptText;    // le tour relance si la session etait perimeee
+    int promptRecoveries = 0;
+
     qint64 nextRpcId = 1;
     qint64 permissionRpcId = -1;
     int sessionNewTries = 0;
@@ -120,4 +149,5 @@ private:
     bool ready = false;
     bool generating = false;
     bool voluntaryClose = false;
+    bool resumed = false;
 };

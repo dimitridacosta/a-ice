@@ -102,7 +102,8 @@ private:
     };
 
     void applyRegions();
-    void collect(QQuickItem *item, QQuickItem *sceneRoot, QVector<Card> &out, int &excluded) const;
+    void collect(QQuickItem *item, QQuickItem *sceneRoot, QVector<Card> &out, int &excluded,
+                 int &candidates) const;
     static bool isInside(const QQuickItem *item, const QQuickItem *ancestor);
     void persistPosition();
     void onFrameSwapped();
@@ -120,6 +121,7 @@ private:
     bool m_hud = true;
     bool m_shadow = true;
     int m_excludedShown = -1;              // dernier compte d'exclusions affiche (debug)
+    long m_verreShown = -1;               // dernier etat du verre affiche (debug)
     int m_cards = 0;
 
     // Mesure des frames.

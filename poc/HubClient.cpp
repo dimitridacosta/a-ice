@@ -12,6 +12,8 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QCryptographicHash>
+#include <QSettings>
 #include <QTimer>
 #include <QUrl>
 #include <QWebSocket>
@@ -63,6 +65,37 @@ bool sameTail(const QString &longer, const QString &shorter)
 
     return longer.endsWith(tail)
         && longer.at(longer.size() - tail.size() - 1) == QLatin1Char('/');
+}
+
+/*
+ * Un echec du pont porte son vrai motif dans « data » : soit une chaine, soit un
+ * objet { details }. Sans ce detail, session/prompt ne dit que « Internal error ».
+ */
+QString errorDetail(const QJsonObject &error)
+{
+    const QJsonValue data = error.value(QStringLiteral("data"));
+    if (data.isString())
+        return data.toString();
+    if (data.isObject())
+        return data.toObject().value(QStringLiteral("details")).toString();
+    return {};
+}
+
+/*
+ * Ce que le pont repond quand la session qu il nous a rendue n existe plus cote
+ * backend : « session … no longer exists in the backend — this thread cannot be
+ * recovered; start a new thread ».
+ */
+bool looksLikeDeadSession(const QString &detail)
+{
+    return detail.contains(QStringLiteral("no longer exists"))
+        || detail.contains(QStringLiteral("cannot be recovered"));
+}
+
+// Un identifiant complet ne tient pas dans la carte du hub.
+QString shortId(const QString &id)
+{
+    return id.left(8);
 }
 
 } // namespace
@@ -248,6 +281,8 @@ void HubClient::disconnectHub()
     setGenerating(false);
     instanceIdValue.clear();
     sessionIdValue.clear();
+    resumed = false;
+    emit resumedChanged();
     setStatus(QStringLiteral("debranche"));
 }
 
@@ -277,6 +312,7 @@ void HubClient::requestInstances()
             if (id.isEmpty())
                 continue;
             instanceIdValue = id;
+            restoreStoredSession();
             openBridge();
             return;
         }
@@ -327,6 +363,96 @@ void HubClient::openBridge()
     bridge->open(req);
 }
 
+// --- la session, d une fenetre a l autre ------------------------------------
+
+/*
+ * Une session par workspace, pas par lancement : la cle est le hash du chemin
+ * tel que le hub le connait (/var home), donc la meme de n'importe ou on lance.
+ */
+QString HubClient::sessionKey() const
+{
+    const QByteArray hash = QCryptographicHash::hash(workspace.toUtf8(), QCryptographicHash::Md5).toHex();
+    return QStringLiteral("hub/session-") + QString::fromLatin1(hash.left(16));
+}
+
+void HubClient::restoreStoredSession()
+{
+    QSettings settings;
+    storedSessionValue = settings.value(sessionKey()).toString();
+}
+
+void HubClient::rememberSession()
+{
+    if (sessionIdValue.isEmpty())
+        return;
+    QSettings settings;
+    settings.setValue(sessionKey(), sessionIdValue);
+    storedSessionValue = sessionIdValue;
+}
+
+void HubClient::forgetStoredSession()
+{
+    QSettings settings;
+    settings.remove(sessionKey());
+    storedSessionValue.clear();
+}
+
+/*
+ * Deux entrees possible, selon qu on a deja vecu dans ce workspace :
+ *   - session/load sur la session gardee : le pont rejoue l histoire (user et
+ *     agent_message_chunk) avant meme de repondre, donc le corps retrouve ses
+ *     bulles sans qu on ait a les stocker ici;
+ *   - session/new sinon.
+ */
+void HubClient::startSession()
+{
+    sessionNewTries = 0;
+    promptRecoveries = 0;
+
+    if (storedSessionValue.isEmpty()) {
+        mintSession();
+        return;
+    }
+
+    setStatus(QStringLiteral("reprise de la session %1…").arg(shortId(storedSessionValue)));
+
+    // Le replay arrive par session/update : le filtre porte deja sur cette session.
+    sessionIdValue = storedSessionValue;
+    resumed = true;
+    emit resumedChanged();
+
+    rpcSend(QStringLiteral("session/load"),
+            QJsonObject{{QStringLiteral("sessionId"), storedSessionValue},
+                        {QStringLiteral("cwd"), workspace},
+                        {QStringLiteral("mcpServers"), QJsonArray{}}},
+            false);
+}
+
+void HubClient::mintSession()
+{
+    rpcSend(QStringLiteral("session/new"),
+            QJsonObject{{QStringLiteral("cwd"), workspace},
+                        {QStringLiteral("mcpServers"), QJsonArray{}}},
+            false);
+}
+
+void HubClient::startFreshConversation()
+{
+    forgetStoredSession();
+    sessionIdValue.clear();
+    retryPromptText.clear();
+    promptRecoveries = 0;
+    sessionNewTries = 0;
+    resumed = false;
+    emit resumedChanged();
+
+    if (!bridge || !bridge->isValid()) {
+        connectHub();
+        return;
+    }
+    mintSession();
+}
+
 // --- un tour ---------------------------------------------------------------
 
 void HubClient::send(const QString &text)
@@ -342,6 +468,11 @@ void HubClient::send(const QString &text)
         return;
 
     setGenerating(true);
+
+    // Le tour qu on tente : s il bute sur une session perimeee, il repart avec une
+    // session neuve (voir la reponse d erreur).
+    retryPromptText = text;
+    promptRecoveries = 0;
 
     QJsonArray prompt;
     prompt.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
@@ -424,11 +555,46 @@ void HubClient::onBridgeText(const QString &message)
 
     if (msg.contains(QStringLiteral("error"))) {
         const QJsonObject error = msg.value(QStringLiteral("error")).toObject();
-        fail(QStringLiteral("%1 : %2").arg(method,
-                                          error.value(QStringLiteral("message")).toString()));
+        const QString detail = errorDetail(error);
+        const QString message = detail.isEmpty()
+            ? error.value(QStringLiteral("message")).toString()
+            : error.value(QStringLiteral("message")).toString() + QStringLiteral(" — ") + detail;
+
+        // Le premier session/new d une connexion herite parfois du dernier fil lie
+        // a l instance, meme quand ce fil est mort cote backend : le tour echoue
+        // alors sur une session que croyions bonne. On n en meurt pas — on mint une
+        // session neuve et on relance le tour, deux fois par tour au plus.
+        if (method == QStringLiteral("session/prompt") && promptRecoveries < 2
+            && looksLikeDeadSession(detail) && !retryPromptText.isEmpty()) {
+            ++promptRecoveries;
+            setStatus(QStringLiteral("session perimeee : j en mint une neuve"));
+            pendingPrompt = retryPromptText;
+            sessionIdValue.clear();
+            sessionNewTries = 0;
+            resumed = false;
+            emit resumedChanged();
+            mintSession();
+            return;
+        }
+
+        fail(QStringLiteral("%1 : %2").arg(method, message));
+
         if (method == QStringLiteral("session/prompt")) {
             setGenerating(false);
+            retryPromptText.clear();
             emit turnEnded(QStringLiteral("error"));
+            return;
+        }
+
+        if (method == QStringLiteral("session/load")) {
+            // La session gardenee n etait plus repriseable : on repart sur du neuf.
+            setStatus(QStringLiteral("reprise impossible : conversation neuve"));
+            forgetStoredSession();
+            sessionIdValue.clear();
+            sessionNewTries = 0;
+            resumed = false;
+            emit resumedChanged();
+            mintSession();
         }
         return;
     }
@@ -436,16 +602,18 @@ void HubClient::onBridgeText(const QString &message)
     const QJsonObject result = msg.value(QStringLiteral("result")).toObject();
 
     if (method == QStringLiteral("initialize")) {
-        rpcSend(QStringLiteral("session/new"),
-                QJsonObject{{QStringLiteral("cwd"), workspace},
-                            {QStringLiteral("mcpServers"), QJsonArray{}}},
-                false);
+        startSession();
     } else if (method == QStringLiteral("session/new")) {
         sessionIdValue = jsonId(result.value(QStringLiteral("sessionId")));
+        resumed = false;
+        emit resumedChanged();
         verifySessionFreshness();
+    } else if (method == QStringLiteral("session/load")) {
+        // L historique a defile pendant la requete (voir onBridgeNotification) :
+        // la repondre veut dire que la conversation est la.
+        openSessionReady();
     } else if (method == QStringLiteral("session/prompt")) {
-        setGenerating(false);
-        emit turnEnded(result.value(QStringLiteral("stopReason")).toString());
+        endTurn(result.value(QStringLiteral("stopReason")).toString());
     }
 }
 
@@ -473,16 +641,40 @@ void HubClient::onBridgeNotification(const QJsonObject &msg)
         return;
     }
 
-    if (method != QStringLiteral("session/update"))
+    if (method != QStringLiteral("session/update")) {
+        // Le pont declare son etat de tour (agentCapabilities._meta.zcode.turnState).
+        // Un tour peut tres bien finir cote hub sans que la reponse JSON-RPC de
+        // session/prompt nous parvienne — un client tue en plein tour laisse le pont
+        // dans un etat ou il ne repond plus. Ce signal-la, lui, vient toujours.
+        if (method == QStringLiteral("$/zcode/turnState") || method == QStringLiteral("_zcode/turnState")) {
+            if (generating && !params.value(QStringLiteral("running")).toBool()) {
+                setStatus(QStringLiteral("tour termine par le pont"));
+                endTurn(QStringLiteral("end_turn"));
+            }
+            return;
+        }
         return;
+    }
 
     const QJsonObject update = params.value(QStringLiteral("update")).toObject();
     const QString kind = update.value(QStringLiteral("sessionUpdate")).toString();
 
-    if (kind == QStringLiteral("agent_message_chunk")) {
+    if (kind == QStringLiteral("agent_message_chunk") || kind == QStringLiteral("user_message_chunk")) {
         const QJsonObject content = update.value(QStringLiteral("content")).toObject();
-        if (content.value(QStringLiteral("type")).toString() == QStringLiteral("text"))
-            emit chunkReceived(content.value(QStringLiteral("text")).toString());
+        if (content.value(QStringLiteral("type")).toString() != QStringLiteral("text"))
+            return;
+
+        // messageId designe le MEME message d un tour a l autre : c est ce qui fait
+        // qu un chunk qui s ajoute ne rouvre pas une bulle, et que le replay de
+        // session/load en ouvre une par message reprise.
+        const QString messageId = update.value(QStringLiteral("messageId")).toString();
+        const QString role = kind == QStringLiteral("user_message_chunk")
+                                ? QStringLiteral("user")
+                                : QStringLiteral("agent");
+        const QString text = content.value(QStringLiteral("text")).toString();
+        if (text.isEmpty())
+            return;
+        emit chunkReceived(messageId, role, text);
         return;
     }
 
@@ -575,13 +767,36 @@ void HubClient::openSessionReady()
     ready = true;
     stage = Live;
     emit readyChanged();
-    setStatus(QStringLiteral("instance %1 · session %2").arg(instanceIdValue, sessionIdValue));
+    sessionStatusLine();
 
     if (!pendingPrompt.isEmpty()) {
         const QString prompt = pendingPrompt;
         pendingPrompt.clear();
         send(prompt);
     }
+}
+
+void HubClient::sessionStatusLine()
+{
+    setStatus(QStringLiteral("instance %1 · session %2 · %3")
+                  .arg(instanceIdValue, shortId(sessionIdValue),
+                       resumed ? QStringLiteral("conversation reprise")
+                               : QStringLiteral("conversation neuve")));
+}
+
+/*
+ * Fermer un tour, d une reponse JSON-RPC ou du turnState du pont : dans les deux
+ * cas la session est vivante, donc c est elle qu on garde pour le prochain
+ * lancement.
+ */
+void HubClient::endTurn(const QString &stopReason)
+{
+    setGenerating(false);
+    retryPromptText.clear();
+    promptRecoveries = 0;
+    rememberSession();
+    sessionStatusLine();
+    emit turnEnded(stopReason);
 }
 
 // --- autorisations ---------------------------------------------------------

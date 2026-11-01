@@ -102,6 +102,7 @@ Window {
 
     // La bulle agent en cours de remplissage (index dans le modele, -1 sinon).
     property int streamRow: -1
+    property string streamMessageId: ""
 
     /* ---------------------------------------------------------------- bulles */
 
@@ -653,6 +654,20 @@ Window {
                         onClicked: hub.ready ? hub.disconnectHub() : hub.connectHub()
                     }
                 }
+                Text {
+                    // La session vecue est gardee par le client : sans cette sortie
+                    // on resterait bloque sur une conversation usée.
+                    visible: hub.ready
+                    text: "conversation neuve"
+                    color: "#80e9eaee"
+                    font.family: win.uiFont
+                    font.pixelSize: 11
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: win.newConversation()
+                    }
+                }
             }
         }
     }
@@ -789,13 +804,33 @@ Window {
         hub.send(text);
     }
 
-    function appendChunk(text) {
-        if (streamRow < 0) {
-            bubbleModel.insert(0, { role: "agent", text: "" });
-            streamRow = 0;
+    function appendChunk(messageId, role, text) {
+        // Un messageId = une bulle. Le texte d un meme message s y accole (le
+        // direct du tour), et le replay d une session reprise ouvre une bulle par
+        // message, du plus vieux au plus recent : insert(0) tient la route.
+        const sameMessage = streamRow >= 0 && (messageId.length === 0
+            ? streamMessageId.length === 0
+            : streamMessageId === messageId);
+
+        if (sameMessage) {
+            const current = bubbleModel.get(streamRow).text;
+            bubbleModel.setProperty(streamRow, "text", current.length ? current + text : text);
+            bubblesView.followNewest();
+            return;
         }
-        const current = bubbleModel.get(streamRow).text;
-        bubbleModel.setProperty(streamRow, "text", current.length ? current + text : text);
+
+        // Notre propre message, deja pose par send() : si le pont nous le renvoie,
+        // on ne le duplique pas, on s y rattache juste.
+        if (role === "user" && bubbleModel.count > 0 && bubblesView.atNewest
+            && bubbleModel.get(0).role === "user" && bubbleModel.get(0).text === text) {
+            streamRow = 0;
+            streamMessageId = messageId;
+            return;
+        }
+
+        bubbleModel.insert(0, { role: role, text: text });
+        streamRow = 0;
+        streamMessageId = messageId;
         bubblesView.followNewest();
     }
 
@@ -806,14 +841,25 @@ Window {
                 bubbleModel.remove(streamRow);
             streamRow = -1;
         }
+        streamMessageId = "";
         settleTimer.start();
+    }
+
+    /* Repartre d une conversation vierge : le modele se vide avec la session. */
+    function newConversation() {
+        bubbleModel.clear();
+        streamRow = -1;
+        streamMessageId = "";
+        settleTimer.start();
+        hub.startFreshConversation();
     }
 
     Connections {
         target: hub
         // Le texte du tour arrive chunk par chunk — c'est le chemin du vrai
-        // streaming, celui qui fait grandir la carte et bouger le verre.
-        function onChunkReceived(text) { win.appendChunk(text); }
+        // streaming, celui qui fait grandir la carte et bouger le verre. Une
+        // session reprise passe par le meme chemin : le pont rejoue l historique.
+        function onChunkReceived(messageId, role, text) { win.appendChunk(messageId, role, text); }
         function onTurnEnded(stopReason) { win.endTurn(stopReason); }
     }
 

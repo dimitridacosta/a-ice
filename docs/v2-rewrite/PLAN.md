@@ -43,6 +43,13 @@ une session déjà live est refusée au profit d'une session neuve.*
 ### M3 — Intégration
 - Markdown parsé **hors UI thread** (QTextDocument), historique conversation, config/SOUL, récupération progressive des features de `main`.
 
+*Résultat partiel (2026-11-01) : la gestion de session ACP est en place — session
+gardée par workspace dans `QSettings`, `session/load` à chaque lancement (le pont
+rejoue l'historique), session neuve mintée quand la gardée est périmée, et fin de
+tour close par le `turnState` du pont. Voir la dernière section de
+[M2-client-hub.md](M2-client-hub.md). Reste : markdown hors UI thread,
+multi-sessions, source unique du hub.*
+
 ### M4 — Polish
 - Ombres, dégradés, animations d'entrée, thème complet, doc utilisateur.
 
