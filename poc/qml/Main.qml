@@ -43,6 +43,9 @@ Window {
     readonly property color barFill: "#6E222228"    // rgba(34,34,40,110)
     readonly property color barBorder: "#28FFFFFF"  // rgba(255,255,255,40)
     readonly property color ink: "#e9eaee"
+    // Le corps est en Ubuntu (police installee sur la machine : Ubuntu Regular),
+    // plus etroite et plus legere que la police par defaut du systeme.
+    readonly property string uiFont: "Ubuntu"
 
     // Reglages modifies a la volee depuis le badge (mesure du cout GPU).
     property bool shadowOn: glass.shadow   // AICE_SHADOW=0 pour mesurer sans ombre
@@ -205,8 +208,11 @@ Window {
                 property int glassRadius: win.cardRadius
 
                 // Carte agent : pleine largeur. Carte user : épouse son texte.
-                width: cell.agent ? (cell.width - 2 * win.halo)
-                                  : Math.min(cell.width - 2 * win.halo, natural.width + 32)
+                // Les deux roles epousent leur texte. La v1 etait une colonne de
+                // 460 px : une reponse courte donnait une carte courte, d'ou
+                // l'effet « serre leger ». Ici la carte ne prend pleine largeur que
+                // quand le texte la remplit.
+                width: Math.min(cell.width - 2 * win.halo, natural.width + 32)
                 height: body.implicitHeight + 24   // v1 : 12 px en haut, 12 px en bas
                 x: cell.agent ? win.halo : (cell.width - win.halo - width)
 
@@ -234,6 +240,7 @@ Window {
                     width: parent.width - 32
                     text: cell.text
                     color: win.ink
+                    font.family: win.uiFont
                     font.pixelSize: 13
                     textFormat: Text.PlainText
                     wrapMode: Text.WordWrap
@@ -247,6 +254,7 @@ Window {
                     visible: false
                     text: cell.text
                     color: win.ink
+                    font.family: win.uiFont
                     font.pixelSize: 13
                     textFormat: Text.PlainText
                 }
@@ -340,6 +348,7 @@ Window {
                     anchors.centerIn: parent
                     text: "\u2806"
                     color: "#70e9eaee"
+                    font.family: win.uiFont
                     font.pixelSize: 15
                 }
             }
@@ -356,6 +365,7 @@ Window {
                     anchors.centerIn: parent
                     text: hub.generating ? "\u25a0" : "\u2191"
                     color: "#ffffff"
+                    font.family: win.uiFont
                     font.pixelSize: 16
                     font.bold: true
                 }
@@ -375,6 +385,7 @@ Window {
                 text: ""
                 readonly property string hint: "Ask A-Ice\u2026"
                 color: "#f0f1f3"
+                font.family: win.uiFont
                 font.pixelSize: 14
                 wrapMode: TextEdit.Wrap
                 // TextEdit (Qt Quick de base) n'a pas de signal accepted :
@@ -402,6 +413,7 @@ Window {
                 visible: !promptArea.text.length
                 text: promptArea.hint
                 color: "#70e9eaee"
+                font.family: win.uiFont
                 font.pixelSize: 14
                 wrapMode: Text.WordWrap
             }
@@ -554,6 +566,7 @@ Window {
                 width: permCol.width
                 text: "le moteur demande : " + hub.permissionTool
                 color: win.ink
+                font.family: win.uiFont
                 font.pixelSize: 13
                 font.bold: true
             }
@@ -561,6 +574,7 @@ Window {
                 width: permCol.width
                 text: hub.permissionDetail
                 color: "#A8e9eaee"
+                font.family: win.uiFont
                 font.pixelSize: 11
                 elide: Text.ElideRight
             }
@@ -585,6 +599,7 @@ Window {
                             text: (modelData.name && modelData.name.length)
                                       ? modelData.name : modelData.optionId
                             color: win.ink
+                            font.family: win.uiFont
                             font.pixelSize: 12
                         }
                         MouseArea {
@@ -608,7 +623,10 @@ Window {
 
         anchors.top: parent.top
         anchors.left: parent.left
-        anchors.topMargin: 20
+        // En fenetre etroite, la carte du hub se pose sous le badge de mesures au
+        // lieu de passer dessous (elles sont ancrees toutes deux en haut, de cotes
+        // opposes).
+        anchors.topMargin: glass.hud ? hud.height + 28 : 20
         anchors.leftMargin: 20
 
         width: hubCol.implicitWidth + 20
@@ -642,12 +660,14 @@ Window {
             Text {
                 text: "hub " + hub.status
                 color: hub.ready ? win.ink : "#B8E8A2A8"
+                font.family: win.uiFont
                 font.pixelSize: 11
             }
             Text {
                 visible: hub.toolLine.length > 0
                 text: "outil " + hub.toolLine
                 color: "#90e9eaee"
+                font.family: win.uiFont
                 font.pixelSize: 11
             }
             Row {
@@ -655,6 +675,7 @@ Window {
                 Text {
                     text: hub.ready ? "couper" : "rejoindre"
                     color: "#80e9eaee"
+                    font.family: win.uiFont
                     font.pixelSize: 11
                     MouseArea {
                         anchors.fill: parent
@@ -708,6 +729,7 @@ Window {
                                         + glass.frameMax.toFixed(2) + " ms" : "frame ms : ...")
                       + " · " + bubbleModel.count + " bulles · " + glass.cards + " cartes"
                 color: win.ink
+                font.family: win.uiFont
                 font.pixelSize: 11
             }
 
@@ -717,6 +739,7 @@ Window {
                 Text {
                     text: "ombre " + (win.shadowOn ? "o" : "non")
                     color: win.shadowOn ? "#CC" + win.ink.toString().slice(1) : "#59e9eaee"
+                    font.family: win.uiFont
                     font.pixelSize: 11
                     MouseArea {
                         anchors.fill: parent
@@ -727,6 +750,7 @@ Window {
                 Text {
                     text: "fade " + (win.fadeOn ? "o" : "non")
                     color: win.fadeOn ? "#CC" + win.ink.toString().slice(1) : "#59e9eaee"
+                    font.family: win.uiFont
                     font.pixelSize: 11
                     MouseArea {
                         anchors.fill: parent
@@ -737,12 +761,14 @@ Window {
                 Text {
                     text: "fenetre " + (glass.moveNative ? "natif" : "par deltas")
                     color: "#80e9eaee"
+                    font.family: win.uiFont
                     font.pixelSize: 11
                 }
                 Text {
                     text: "taille " + win.width + " x " + win.height + " ("
                           + (glass.resizeNative ? "natif" : "par deltas") + ")"
                     color: "#80e9eaee"
+                    font.family: win.uiFont
                     font.pixelSize: 11
                 }
             }

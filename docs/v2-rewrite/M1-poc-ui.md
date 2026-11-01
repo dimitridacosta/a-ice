@@ -240,6 +240,33 @@ Mesure de la même manœuvre côté fenêtre non carrée : `--size 1040x520` don
 `1016x80 @ 12,23`, `1016x46 @ 12,455`, carte user `383 @ x=645` (bord droit à
 12 px) — tout suit l'ancrage, sans retouche.
 
+## Police : Ubuntu, et les cartes qui épousent leur texte
+
+Deux choses donnaient au v1 son effet « resserré léger », et il manquait au POC :
+
+- **La police**. Le corps est passé en **Ubuntu** (`win.uiFont`, posée sur les 17
+  items de texte du POC, saisie comprise). Elle est installée sur la machine
+  (`fc-match Ubuntu` → `Ubuntu_Regular.ttf`, 12 graisses), et elle est plus étroite
+  que la police par défaut du système : le même texte tient moins large.
+- **La colonne**. Le v1 est une applet de **460 px de large**
+  (`AiceApplet.cpp:138` : `w->resize(460, …)`) : une réponse courte y donnait une
+  carte courte. Le POC, lui, forçait la carte agent à la pleine largeur de la
+  fenêtre — dans une fenêtre de 800 px, une réponse de deux lignes devenait une
+  carte géante.
+
+Correction : **les deux rôles épousent leur texte** (largeur = texte + 32, plafonnée
+à la largeur de la zone). Mesuré à la sonde, police Ubuntu 13 px, en comparant avec
+la largeur réelle du texte : « bonjour » (46 px de texte) → carte **78 px** ;
+phrase d'une ligne (352 px) → carte **384 px** ; hauteur d'une carte d'une ligne =
+**42,75 px**. Les cartes agent restent alignées à gauche, les cartes user à droite.
+
+`--size 460x800` reproduit la colonne du v1 : capture `ub460` — la conversation
+prend le même air que dans l'applet.
+
+Au passage, dans une fenêtre étroite la carte du hub (en haut à gauche) passait sous
+le badge de mesures (en haut à droite) : elle se pose maintenant sous le badge quand
+il est visible (`anchors.topMargin: glass.hud ? hud.height + 28 : 20`).
+
 ## La poignée de redimensionnement
 
 `resizeEdge` : un `Item` de 10 px collé au bord droit de la barre, sur toute sa
