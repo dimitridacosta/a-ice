@@ -29,8 +29,13 @@ trois ingrédients tiennent. Reste à valider à l'œil (flou, drag natif, layer
 3. Zone bulles : `ListView` virtualisé, 2 000 bulles factices, scroll fluide, fade-out (dégradé alpha) haut/bas, hauteur paramétrable (plein écran par défaut).
 - **Critère** : stress test sans freeze ; frame time mesuré et stable.
 
-### M2 — Client hub ACP
+### M2 — Client hub ACP — **fait**
 - Connexion au hub (endpoint dans `~/.config/a-ice/config.json`), création de session, stream des chunks, affichage live, routage des `request_permission` vers des boutons dans l'UI.
+
+*Résultat : [M2-client-hub.md](M2-client-hub.md). Le meme binaire `a-ice-m1` prompte
+maintenant le hub (instance réutilisée ou incubée, session neuve, chunks qui coulent
+dans la carte agent, permissions en boutons). Garde vérifiée : `session/new` qui rend
+une session déjà live est refusée au profit d'une session neuve.*
 
 ### M3 — Intégration
 - Markdown parsé **hors UI thread** (QTextDocument), historique conversation, config/SOUL, récupération progressive des features de `main`.
