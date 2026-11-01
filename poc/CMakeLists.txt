@@ -10,6 +10,8 @@ add_executable(a-ice-m1
     GlassHelper.cpp
     HubClient.h
     HubClient.cpp
+    Markdown.h
+    Markdown.cpp
 )
 
 qt_add_resources(a-ice-m1 "aice_m1"

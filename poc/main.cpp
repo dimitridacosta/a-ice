@@ -17,6 +17,7 @@
 
 #include "GlassHelper.h"
 #include "HubClient.h"
+#include "Markdown.h"
 
 int main(int argc, char *argv[])
 {
@@ -47,11 +48,13 @@ int main(int argc, char *argv[])
 
     GlassHelper glass;
     HubClient hub;
+    Markdown markdown;
     if (parser.isSet(QStringLiteral("workspace")))
         hub.setWorkspace(parser.value(QStringLiteral("workspace")));
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("glass"), &glass);
     engine.rootContext()->setContextProperty(QStringLiteral("hub"), &hub);
+    engine.rootContext()->setContextProperty(QStringLiteral("markdown"), &markdown);
 
     // Test M2 : --prompt envoie un tour des que la session est ouverte,
     // AICE_TURN_QUIT ferme la fenetre des que ce tour est termine.

@@ -167,8 +167,13 @@ Window {
             required property int index
             required property string role
             required property string text
+            required property string msgId
+            required property string html
 
             readonly property bool agent: role === "agent"
+            // Une bulle fermee porte son html venu du parseur hors-UI ; en
+            // streaming (ou pour une bulle user), on reste en PlainText.
+            readonly property bool rich: agent && html.length > 0
 
             width: bubblesView.width
             height: card.height
@@ -238,25 +243,27 @@ Window {
                     x: 12
                     y: 8
                     width: parent.width - 24
-                    text: cell.text
+                    text: cell.rich ? cell.html : cell.text
+                    textFormat: cell.rich ? Text.RichText : Text.PlainText
                     color: win.ink
                     font.family: win.uiFont
                     font.pixelSize: 13
-                    textFormat: Text.PlainText
                     wrapMode: Text.WordWrap
                     lineHeight: 1.25
                 }
 
                 // Deuxieme passe de mesure : la largeur naturelle du texte, pour
-                // que la carte user colle a son contenu (comme la bulle v1).
+                // que la carte user colle a son contenu (comme la bulle v1). Elle
+                // porte la meme mise en forme que body : une bulle riche se mesure
+                // en riche, sinon la carte se trompe de largeur.
                 Text {
                     id: natural
                     visible: false
-                    text: cell.text
+                    text: body.text
+                    textFormat: body.textFormat
                     color: win.ink
                     font.family: win.uiFont
                     font.pixelSize: 13
-                    textFormat: Text.PlainText
                 }
             }
         }
@@ -790,7 +797,7 @@ Window {
             for (let k = 1; k < repeat; ++k)
                 text += " " + lines[(i + k) % lines.length];
             // insert(0) : le modele est du plus recent au plus vieux.
-            bubbleModel.insert(0, { role: (i % 2) === 0 ? "agent" : "user", text: text });
+            bubbleModel.insert(0, { role: (i % 2) === 0 ? "agent" : "user", text: text, msgId: "", html: "" });
         }
     }
 
@@ -806,10 +813,26 @@ Window {
 
         // Du plus recent au plus vieux : la bulle user d'abord, la reponse
         // agent par-dessus, donc la reponse se cale tout contre la barre.
-        bubbleModel.insert(0, { role: "user", text: text });
+        bubbleModel.insert(0, { role: "user", text: text, msgId: "", html: "" });
         bubblesView.followNewest();
 
         hub.send(text);
+    }
+
+    /*
+     * Une bulle fermee (le message suivant est ouvert, ou le tour a termine)
+     * part au parseur hors-UI : son html reviendra par applyHtml(), et elle
+     * basculera en RichText a ce moment-la. Pendant le streaming, la bulle
+     * reste en PlainText — on ne reparse pas a chaque chunk.
+     */
+    function finalizeBubble(row) {
+        if (row < 0 || row >= bubbleModel.count)
+            return;
+        const bubble = bubbleModel.get(row);
+        const msgId = bubble.msgId || "";
+        if (bubble.role !== "agent" || !bubble.text.length || !msgId.length || (bubble.html || "").length)
+            return;
+        markdown.parse(msgId, bubble.text);
     }
 
     function appendChunk(messageId, role, text) {
@@ -827,6 +850,9 @@ Window {
             return;
         }
 
+        // La bulle precedente ferme sa vie ici : elle part au parseur.
+        finalizeBubble(streamRow);
+
         // Notre propre message, deja pose par send() : si le pont nous le renvoie,
         // on ne le duplique pas, on s y rattache juste.
         if (role === "user" && bubbleModel.count > 0 && bubblesView.atNewest
@@ -836,7 +862,7 @@ Window {
             return;
         }
 
-        bubbleModel.insert(0, { role: role, text: text });
+        bubbleModel.insert(0, { role: role, text: text, msgId: messageId, html: "" });
         streamRow = 0;
         streamMessageId = messageId;
         bubblesView.followNewest();
@@ -844,13 +870,26 @@ Window {
 
     function endTurn(stopReason) {
         if (streamRow >= 0) {
-            // Un tour sans texte (outil seul, tour coupe) ne laisse pas de bulle vide.
             if (!bubbleModel.get(streamRow).text.length)
                 bubbleModel.remove(streamRow);
+            else
+                finalizeBubble(streamRow);
             streamRow = -1;
         }
         streamMessageId = "";
         settleTimer.start();
+    }
+
+    /* Le html venu du parseur (hors UI) rattrape sa bulle par son messageId. */
+    function applyHtml(messageId, html) {
+        for (let i = 0; i < bubbleModel.count; ++i) {
+            const bubble = bubbleModel.get(i);
+            if ((bubble.msgId || "") === messageId) {
+                bubbleModel.setProperty(i, "html", html);
+                glass.scheduleRefresh();
+                return;
+            }
+        }
     }
 
     /* Repartre d une conversation vierge : le modele se vide avec la session. */
@@ -869,6 +908,7 @@ Window {
         // session reprise passe par le meme chemin : le pont rejoue l historique.
         function onChunkReceived(messageId, role, text) { win.appendChunk(messageId, role, text); }
         function onTurnEnded(stopReason) { win.endTurn(stopReason); }
+        function onParsed(messageId, html) { win.applyHtml(messageId, html); }
     }
 
     // Bourrage d'affichage (AICE_PUMP=1) : redessine en continu, pour que le
