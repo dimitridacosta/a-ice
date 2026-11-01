@@ -468,6 +468,14 @@ Window {
                 }
                 onPositionChanged: {
                     /*
+                     * Le geste est au clic, pas au survol. Un MouseArea avec
+                     * hoverEnabled recoit AUSSI les mouvements sans bouton : sans
+                     * ce garde-fou, la fenetre se fait redimensionner par un simple
+                     * passage de curseur sur le bord droit.
+                     */
+                    if (!pressed)
+                        return;
+                    /*
                      * Le composeur a-t-il vraiment joue ? Une fenetre sans decoration
                      * peut lui faire refuser le geste tout en le donnant pour bon.
                      * On lui laisse un delai, puis on regarde la taille : si elle

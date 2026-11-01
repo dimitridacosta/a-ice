@@ -355,6 +355,11 @@ cela derive, on coupe `maxBlur` en premier, pas `intensity`.
   plus haut) capte le geste en premier. `resizeEdge` est déclarée après `pillDrag`
   et porte `z: 1` ; sinon le drag de la barre mangerait la poignée. Et ses 10 px ne
   doivent pas mordre sur le bouton d'envoi, sinon le bouton devient inaccessible.
+- **Un `MouseArea` avec `hoverEnabled` recoit les mouvements sans bouton** :
+  `positionChanged` part au simple survol. Un geste de redimensionnement (ou tout
+  fallback par deltas) doit etre garde par `pressed`, sinon la fenetre se fait
+  redimensionner quand on passe le curseur sur le bord — c'est ce qui est arrive a
+  `resizeEdge` au premier jet.
 - Les géométries transitoires pendant un layout peuvent remonter des positions
   négatives dans le dump (le badge HUD à `-233,20`) : c'est sans effet sur le résultat.
 
