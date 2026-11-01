@@ -172,11 +172,16 @@ L'ombre est réglée à l'œil sur capture (`CardShadow`) :
 
 | Reglage | Valeur | Pourquoi |
 | --- | --- | --- |
-| `tint` | `Qt.rgba(0.07, 0.24, 0.62, 1.0)` | un **bleu profond**, pas un bleu éclairé : l'ombre se voit aussi a travers la carte translucide, un bleu trop lumineux colore toute la fenetre |
-| `intensity` | 0,8 | assez presente sans densiter le fond |
-| `softness` | 0,38 | 38 % du flou max : un halo court, pas une nappe |
-| `maxBlur` | 30 px | idem — un halo large a été essayé (`40`) et rejeté |
-| `drop` | 7 px (10 pour la barre, 6 pour le badge) | la carte flotte |
+| `tint` | `Qt.rgba(0.02, 0.14, 0.72, 1.0)` | un **bleu sature**, pas un bleu pale : l'ombre se compose sur un fond clair (le fond de controle, comme le papier peint floute de Plasma) et une teinte desensee y devient **grise** a la mesure |
+| `intensity` | 0,9 | l'ombre ne herite que de l'alpha de la carte (0,43 pour la barre) : sans toute son opacite elle reste lavace |
+| `softness` | 0,5 | 50 % du flou max = 11 px de halo, pas une nappe |
+| `maxBlur` | 22 px | le halo doit rester **plus court que le devers** : sinon la carte a un liseré lumineux au lieu d'une ombre |
+| `drop` | 11 px (14 pour la barre, 9 pour le badge et la carte du hub) | la carte flotte, et le halo est nettement plus bas que haut |
+
+Ces reglages se sont corriges a la mesure, pas a l'oeil : sur la capture, la
+penombre sous une carte rend `B/R = 1,9` la ou le fond est a `1,2` (avant la
+ correction : 1,6 contre 1,2 — donc gris). Et le halo lateral ne depasse la carte
+que de 3-4 px, la penombre projetee fait ~15 px.
 
 Et surtout : **une ombre est calculée à partir de ce que contient le layer**. Les
 cartes sont donc des conteneurs (`Item`, qui porte `glassCard` et le rayon de verre)
@@ -194,8 +199,7 @@ heritait de sa propre ombre : un halo sombre sous les lettres.
    l'assumer (le drag devient moins fluide).
 3. **`AICE_LAYER=1`** : overlay sans ancre, au-dessus de tout, sans tâche dans le
    panel. Le chemin layer-shell est écrit mais n'a pas été essayé en conditions réelles.
-4. **Le gout de l'ombre** (teinte `0.07/0.24/0.62`, intensité 0,8, flou 30 px, halo
-   38 %, dévers 7 px) et du fade (90 px) au toucher, et le scroll à 2 000 bulles. Ces
+4. **Le gout de l'ombre** (teinte `0.02/0.14/0.72`, intensité 0,9, flou 22 px, halo 50 %, dévers 11 px) et du fade (90 px) au toucher, et le scroll à 2 000 bulles. Ces
    réglages sont discutables — `CardShadow` est un composant unique, ils se changent
    là, et `AICE_SHADOW=0` permet de comparer avec/sans en direct.
 5. La persistance de position : relancer et vérifier que la fenêtre se remet où elle
@@ -213,6 +217,13 @@ heritait de sa propre ombre : un halo sombre sous les lettres.
 - **Ombre bleue trop forte** : une teinte éclairée avec un halo large
   (`0.15/0.42/1`, intensité 1, flou 40) **colore toute la fenêtre**, parce qu'on la
   voit aussi à travers les cartes translucides. Bleu profond et halo court.
+- **Ombre bleue trop lavee = ombre grise** : une teinte a peine bleutee
+  (`0.07/0.24/0.62`) composee sur un fond clair rend gris (B/R 1,6 contre 1,2 de
+  fond). Il faut un bleu sature, et toute l'opacite possible — l'ombre ne depasse
+  jamais l'alpha de la carte qui la porte.
+- **Halo plus large que le devers = liseré lumineux** : si le flou (11 px ici) est
+  plus epais que le devers (11 px aussi), l'ombre entoure la carte de partout et
+  rend une aura, pas une ombre posee dessous.
 - **`layer.transparentBorder` n'existe plus en Qt 6.11** (il est remplacé par
   `autoPaddingEnabled`) : le QML refuse de charger avec
   `Cannot assign to non-existent property "transparentBorder"`.

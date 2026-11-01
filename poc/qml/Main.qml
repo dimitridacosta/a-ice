@@ -57,14 +57,19 @@ Window {
      * mesure ainsi le cout reel (un rendu en deux passes par carte).
      */
     component CardShadow: MultiEffect {
-        property real intensity: 0.8      // 0 = pas d'ombre
-        property real softness: 0.38      // epaisseur du degrade (fraction du flou max)
-        property int maxBlur: 30
-        property int drop: 7              // devers vers le bas : la carte flotte
-        // Ombre bleutee, pas noire : un bleu profond, pas un bleu eclaire.
-        // L'ombre se voit aussi a travers la carte translucide : un bleu trop
-        // lumineux ou un halo trop large coloreraient toute la fenetre.
-        property color tint: Qt.rgba(0.07, 0.24, 0.62, 1.0)
+        property real intensity: 0.9      // 0 = pas d'ombre
+        property real softness: 0.5       // epaisseur du degrade (fraction du flou max)
+        property int maxBlur: 22          // 11 px de halo : moins que le devers, sinon
+                                          // la carte a un liseré lumineux au lieu d'une ombre
+        property int drop: 11             // devers vers le bas : la carte flotte
+        /*
+         * Bleu sature et serre, pas un bleu pale : l'ombre se compose sur un fond
+         * deja clair (le fond de controle, comme le papier peint floute de Plasma),
+         * donc une teinte desensee devient grise a la mesure. Et l'ombre ne herite
+         * que de l'alpha de la carte (0,43 pour la barre) : il lui faut toute son
+         * opacite pour rester bleutee.
+         */
+        property color tint: Qt.rgba(0.02, 0.14, 0.72, 1.0)
 
         shadowEnabled: intensity > 0
         shadowColor: tint
@@ -252,7 +257,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { drop: 10 }
+            layer.effect: CardShadow { drop: 14 }
         }
 
         // Saisie de la fenetre : le geste natif du composeur si il le sait faire,
@@ -497,7 +502,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { intensity: 0.7; drop: 6 }
+            layer.effect: CardShadow { intensity: 0.75; drop: 9 }
         }
 
         Column {
@@ -561,7 +566,7 @@ Window {
 
             layer.enabled: win.shadowOn
             layer.samples: 4
-            layer.effect: CardShadow { intensity: 0.7; drop: 6 }
+            layer.effect: CardShadow { intensity: 0.75; drop: 9 }
         }
 
         Column {
