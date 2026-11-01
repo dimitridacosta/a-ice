@@ -33,6 +33,9 @@ class GlassHelper : public QObject
     /// true si le deplacement natif du composeur a fonctionne, false si le
     /// fallback QML (deplacement par deltas) a pris le relais.
     Q_PROPERTY(bool moveNative READ moveNative NOTIFY moveNativeChanged)
+    /// true si le redimensionnement natif du composeur a fonctionne, false si le
+    /// fallback QML (ajustement par deltas) a pris le relais.
+    Q_PROPERTY(bool resizeNative READ resizeNative NOTIFY resizeNativeChanged)
     /// Mode stress : 2000 bulles factices (AICE_STRESS=1).
     Q_PROPERTY(bool stress READ stress CONSTANT)
     /// Bourrage de l'affichage : redessine en continu pour mesurer le frame
@@ -57,6 +60,11 @@ public:
     /// qui, lui, capture une image.)
     Q_INVOKABLE bool startMove();
 
+    /// Redimensionne la fenetre depuis les bords donnes (Qt::Edges meldes en
+    /// entier), du cote ou la fenetre grandit : le bord droit et/ou le bas.
+    /// Renvoie false si c'est au QML d'ajuster la taille a la main.
+    Q_INVOKABLE bool startResize(int edges);
+
     /// Les cartes filles de cet item sont retranchees de sa zone (le ListView) :
     /// une bulle sortie du viewport ne doit ni flouter ni capter les clics.
     Q_INVOKABLE void setClipItem(QQuickItem *item);
@@ -74,6 +82,7 @@ public:
     qlonglong frames() const { return m_frames; }
     int cards() const { return m_cards; }
     bool moveNative() const { return m_moveNative; }
+    bool resizeNative() const { return m_resizeNative; }
     bool stress() const { return m_stress; }
     bool pump() const { return m_pump; }
     bool hud() const { return m_hud; }
@@ -83,6 +92,7 @@ signals:
     void frameMsChanged();
     void cardsChanged();
     void moveNativeChanged();
+    void resizeNativeChanged();
 
 private:
     struct Card {
@@ -104,6 +114,7 @@ private:
     bool m_pending = false;            // refresh deja programme
     bool m_layered = false;            // overlay layer-shell (AICE_LAYER=1)
     bool m_moveNative = false;
+    bool m_resizeNative = false;
     bool m_stress = false;
     bool m_pump = false;
     bool m_hud = true;

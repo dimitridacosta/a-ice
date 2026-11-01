@@ -34,7 +34,7 @@ int main(int argc, char *argv[])
         "AICE_QML=/chemin/Main.qml pour iterer sans recompiler."));
     parser.addHelpOption();
     parser.addOption(QCommandLineOption(QStringLiteral("size"),
-        QStringLiteral("Cote de la fenetre carre (defaut: 800)."),
+        QStringLiteral("Cote de la fenetre (defaut: 800), ou largeur x hauteur : 900x640."),
         QStringLiteral("px"), QStringLiteral("800")));
     parser.addOption(QCommandLineOption(QStringLiteral("prompt"),
         QStringLiteral("Envoie ce prompt des que la session ACP est ouverte (test M2)."),
@@ -76,9 +76,20 @@ int main(int argc, char *argv[])
         });
     }
 
-    // Taille de test du principe : carree, 800 x 800 par defaut.
-    engine.rootContext()->setContextProperty(
-        QStringLiteral("pocSize"), qMax(240, parser.value(QStringLiteral("size")).toInt()));
+    // Taille de test du principe : un cote (carre) ou largeur x hauteur, pour
+    // regarder ce que la fenetre redimensionnee fait du verre et des bulles.
+    const QString sizeArg = parser.value(QStringLiteral("size"));
+    int pocWidth = 800;
+    int pocHeight = 800;
+    const int separator = sizeArg.indexOf(QLatin1Char('x'));
+    if (separator > 0) {
+        pocWidth = qMax(240, sizeArg.left(separator).toInt());
+        pocHeight = qMax(240, sizeArg.mid(separator + 1).toInt());
+    } else {
+        pocWidth = pocHeight = qMax(240, sizeArg.toInt());
+    }
+    engine.rootContext()->setContextProperty(QStringLiteral("pocWidth"), pocWidth);
+    engine.rootContext()->setContextProperty(QStringLiteral("pocHeight"), pocHeight);
 
     // AICE_QML=/chemin/Main.qml : charge le QML depuis le disque au lieu de la
     // ressource embarquee. Pratique pour itere sur l'UI sans recompiler.

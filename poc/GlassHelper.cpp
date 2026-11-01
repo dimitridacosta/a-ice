@@ -148,6 +148,18 @@ bool GlassHelper::startMove()
     return m_moveNative;
 }
 
+bool GlassHelper::startResize(int edges)
+{
+    if (!m_window)
+        return false;
+    // Le composeur ne sait redimensionner que depuis des bords qu'on lui designe :
+    // ici ceux qui grandissent vers la droite et vers le bas, la ou se trouve la
+    // poignee. Les bords haut et gauche restent fixes (la barre ne bouge pas).
+    m_resizeNative = m_window->startSystemResize(Qt::Edges(edges));
+    emit resizeNativeChanged();
+    return m_resizeNative;
+}
+
 void GlassHelper::setClipItem(QQuickItem *item)
 {
     m_clip = item;

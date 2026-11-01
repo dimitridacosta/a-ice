@@ -20,12 +20,22 @@ import QtQuick.Effects
 Window {
     id: win
 
-    // --- reglages du verre (teintes et rayons repris de la v1) ---
+    /*
+     * Proportions mesurees dans la v1 (src/Bubble.cpp, src/ChatWidget.cpp,
+     * src/Glass.h), celles de l'identite qu'on connait :
+     *   bulles : carte de rayon 16, contenu a 16 px de gauche et 12 px du haut,
+     *           4 px d'air autour de la carte (kGlassInset), liste a 8 px des
+     *           bords, 13 px du haut (place de l'ombre) et 4 px entre les bulles ;
+     *   barre : pilule de rayon 22, a 8 px des bords et 19 px du bas, contenu a
+     *           18 px de gauche, 8 px de haut, 10 px de droite et 8 px du bas,
+     *           saisie 14 px de police avec 30 px de haut minimum,
+     *           bouton d'envoi 34 x 34.
+     */
     readonly property int cardRadius: 16
     readonly property int barRadius: 22
     readonly property int hudRadius: 12
-    readonly property int inset: 8          // marge autour des cartes dans la zone
-    readonly property int halo: 12          // place laissee a l'ombre autour de la carte
+    readonly property int inset: 8          // marge de la zone de bulles (v1 : 8)
+    readonly property int halo: 4           // air autour de la carte pour l'ombre (v1 : 4)
     readonly property int fadeBand: 90      // hauteur du fade en haut/bas de la zone
     readonly property color userCard: "#5A3478DA"   // rgba(52,120,218,90)
     readonly property color agentCard: "#64222228"  // rgba(34,34,40,100)
@@ -38,8 +48,12 @@ Window {
     property bool shadowOn: glass.shadow   // AICE_SHADOW=0 pour mesurer sans ombre
     property bool fadeOn: true
 
-    width: pocSize
-    height: pocSize
+    width: pocWidth
+    height: pocHeight
+    // Sous la, la barre de prompt (46 px) et une carte ne tiennent plus : le
+    // composeur doit poser la limite quand la poignee de taille arrive dessus.
+    minimumWidth: 320
+    minimumHeight: 380
     visible: false
     color: "transparent"
     flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
@@ -96,12 +110,24 @@ Window {
         anchors.right: parent.right
         anchors.leftMargin: win.inset
         anchors.rightMargin: win.inset
-        anchors.bottomMargin: 6
+        /*
+         * Air entre la fenetre et les cartes, pris de la v1 (marges de la liste
+         * 8/13/8/8 + 4 px d'inset autour de chaque carte) : les faces des cartes
+         * s'arretent a 12 px des cotes et 17 px du haut.
+         */
+        anchors.topMargin: 17
+        anchors.bottomMargin: 22
 
         model: bubbleModel
-        spacing: 6
+        /*
+         * Ecart entre deux bulles : 12 px, comme en v1. En v1, la carte est dessinee
+         * a 4 px du bord de sa bulle (kGlassInset) et les bulles sont espacees de
+         * 4 px : l'air visible entre deux cartes fait 4 + 4 + 4. Ici la carte est
+         * toute la bulle, donc l'espacement porte a lui seul cet air.
+         */
+        spacing: 12
         cacheBuffer: 600
-        boundsBehavior: Flick.StopAtBounds
+        boundsBehavior: Flickable.StopAtBounds
         focus: false
 
         // Le modele est range du plus recent au plus vieux : index 0 = la bulle la
@@ -112,12 +138,18 @@ Window {
         // le verre.
         verticalLayoutDirection: ListView.BottomToTop
 
-        // Cote « plus recent » d'une vue inverseee = contentYMax (verifie : la vue
-        // donne contentY = -hauteur de la zone quand la plus recente est visible).
-        readonly property bool atNewest: contentY >= contentYMax - 4
+        /*
+         * Cote « plus recent » d'une vue inverseee. La vue ne publie plus de
+         * contentYMax (l'API Flickable ne la connait pas) : la borne haute se
+         * calcule. Verifie a 200 bulles comme a 6, sur une zone de 761 px :
+         * contentY = -761 quand la plus recente est visible, originY = -14 188
+         * (200 bulles) comme -420 (6 bulles).
+         */
+        readonly property real newestY: originY + contentHeight - height
+        readonly property bool atNewest: contentY >= newestY - 4
         function followNewest() {
             if (atNewest)
-                contentY = contentYMax;
+                contentY = newestY;
         }
 
         onContentHeightChanged: glass.scheduleRefresh()
@@ -174,8 +206,8 @@ Window {
 
                 // Carte agent : pleine largeur. Carte user : épouse son texte.
                 width: cell.agent ? (cell.width - 2 * win.halo)
-                                  : Math.min(cell.width - 2 * win.halo, natural.width + 34)
-                height: body.implicitHeight + 26
+                                  : Math.min(cell.width - 2 * win.halo, natural.width + 32)
+                height: body.implicitHeight + 24   // v1 : 12 px en haut, 12 px en bas
                 x: cell.agent ? win.halo : (cell.width - win.halo - width)
 
                 // La matiere de la carte, unique source de l'ombre. L'effet de Qt
@@ -198,7 +230,7 @@ Window {
                 Text {
                     id: body
                     x: 16
-                    y: 13
+                    y: 12
                     width: parent.width - 32
                     text: cell.text
                     color: win.ink
@@ -233,11 +265,12 @@ Window {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        anchors.leftMargin: 20
-        anchors.rightMargin: 20
-        anchors.bottomMargin: 18
+        anchors.leftMargin: 12
+        anchors.rightMargin: 12
+        anchors.bottomMargin: 19
 
-        height: Math.max(52, promptArea.implicitHeight + 24)
+        // v1 : 8 px de marge haute et basse autour d'une saisie de 30 px minimum.
+        height: Math.max(46, promptArea.implicitHeight + 28)
 
         onYChanged: glass.scheduleRefresh()
         onHeightChanged: glass.scheduleRefresh()
@@ -289,18 +322,20 @@ Window {
         Item {
             id: pillRow
             anchors.fill: parent
-            anchors.leftMargin: 12
+            anchors.leftMargin: 6
             anchors.rightMargin: 10
             anchors.topMargin: 8
             anchors.bottomMargin: 8
 
-            // Poignee visible : ce qui se voit se saisit.
+            // Poignee visible : ce qui se voit se saisit. Elle tient dans la marge
+            // de gauche pour que la saisie commence a 18 px du bord de la barre,
+            // comme en v1.
             Item {
                 id: grip
                 anchors.left: parent.left
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
-                width: 18
+                width: 12
                 Text {
                     anchors.centerIn: parent
                     text: "\u2806"
@@ -371,6 +406,93 @@ Window {
                 wrapMode: Text.WordWrap
             }
         }
+
+        /*
+         * Poignee de redimensionnement : le bord droit de la barre, la ou l'on
+         * attend la limite de la fenetre.
+         *
+         * Deux obligations :
+         *   - elle est declaree APRES pillDrag et apres pillRow : dans une carte,
+         *     le MouseArea monte le plus haut capte le geste en premier, sinon le
+         *     drag de la barre mangerait la poignee ;
+         *   - elle est DEDANS la carte de verre : la fenetre est masquee ailleurs,
+         *     donc un element pose hors des cartes ne recoit aucun clic.
+         *
+         * Sa largeur (10 px) est exactement la marge de droite du contenu : elle ne
+         * recouvre pas le bouton d'envoi.
+         */
+        Item {
+            id: resizeEdge
+
+            z: 1
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: 10
+
+            // Ce qui se voit se saisit : un fin repere au bord, qui grandit au survol.
+            Rectangle {
+                id: resizeTick
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.right: parent.right
+                anchors.rightMargin: 3
+                width: 3
+                height: edgeArea.containsMouse ? 30 : 18
+                radius: 2
+                color: edgeArea.containsMouse ? "#C8ffffff" : "#45ffffff"
+                Behavior on height { NumberAnimation { duration: 120 } }
+                Behavior on color { ColorAnimation { duration: 120 } }
+            }
+
+            MouseArea {
+                id: edgeArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.SizeFDiagCursor
+                acceptedButtons: Qt.LeftButton
+
+                property bool nativeResize: false
+                property real lastX: 0
+                property real lastY: 0
+                property int startW: 0
+                property int startH: 0
+                property real pressedAt: 0
+
+                onPressed: {
+                    lastX = mouse.x
+                    lastY = mouse.y
+                    startW = win.width
+                    startH = win.height
+                    pressedAt = Date.now()
+                    nativeResize = glass.startResize(Qt.RightEdge | Qt.BottomEdge)
+                }
+                onPositionChanged: {
+                    /*
+                     * Le composeur a-t-il vraiment joue ? Une fenetre sans decoration
+                     * peut lui faire refuser le geste tout en le donnant pour bon.
+                     * On lui laisse un delai, puis on regarde la taille : si elle
+                     * n'a pas bouge, on reprend la main par deltas — et on repart
+                     * de la position courante du curseur pour ne pas empiler deux
+                     * redimensionnements.
+                     */
+                    if (nativeResize) {
+                        if (Date.now() - pressedAt < 220)
+                            return;
+                        if (win.width !== startW || win.height !== startH)
+                            return;
+                        nativeResize = false
+                        lastX = mouse.x
+                        lastY = mouse.y
+                    }
+                    win.width = win.width + (mouse.x - lastX)
+                    win.height = win.height + (mouse.y - lastY)
+                    lastX = mouse.x
+                    lastY = mouse.y
+                }
+                onReleased: nativeResize = false
+                onCanceled: nativeResize = false
+            }
+        }
     }
 
     /* --------------------------------------------- carte d'autorisation (M2) */
@@ -393,7 +515,7 @@ Window {
         anchors.bottomMargin: 16
 
         width: Math.min(win.width - 2 * win.inset, 470)
-        height: permCol.height + 26
+        height: permCol.height + 24
 
         onYChanged: glass.scheduleRefresh()
         onHeightChanged: glass.scheduleRefresh()
@@ -416,7 +538,7 @@ Window {
         Column {
             id: permCol
             x: 16
-            y: 13
+            y: 12
             spacing: 7
             width: permCard.width - 32
 
@@ -606,6 +728,12 @@ Window {
                 }
                 Text {
                     text: "fenetre " + (glass.moveNative ? "natif" : "par deltas")
+                    color: "#80e9eaee"
+                    font.pixelSize: 11
+                }
+                Text {
+                    text: "taille " + win.width + " x " + win.height + " ("
+                          + (glass.resizeNative ? "natif" : "par deltas") + ")"
                     color: "#80e9eaee"
                     font.pixelSize: 11
                 }
