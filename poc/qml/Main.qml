@@ -46,6 +46,7 @@ Window {
     // Le corps est en Ubuntu (police installee sur la machine : Ubuntu Regular),
     // plus etroite et plus legere que la police par defaut du systeme.
     readonly property string uiFont: "Ubuntu"
+    readonly property string monoFont: "Ubuntu Mono"
 
     // Reglages modifies a la volee depuis le badge (mesure du cout GPU).
     property bool shadowOn: glass.shadow   // AICE_SHADOW=0 pour mesurer sans ombre
@@ -95,6 +96,117 @@ Window {
         shadowHorizontalOffset: 0
         shadowScale: 1.0
         autoPaddingEnabled: true
+    }
+
+    /*
+     * Un bloc de markdown rendu dans une carte.
+     *
+     * L'air est celui de la v1, et c'est la carte qui le porte : 5 px autour d'un
+     * paragraphe ou d'une liste, 14/7 autour d'un titre, 8 autour d'un filet, 0 au
+     * premier et au dernier bloc (bulle nette aux bords). Qt ne sait pas rendre
+     * ces marges depuis un CSS : il les ecrase par des marges inline.
+     *
+     * Le fond (code et tableau) est un Rectangle, pas du CSS : le texte riche de
+     * Qt Quick ne dessine pas de fond derriere un span.
+     */
+    component BlockChunk: Rectangle {
+        id: chunk
+
+        required property var model
+        required property var modelData
+        required property int index
+
+        readonly property var blk: modelData
+        readonly property string kind: blk ? blk.kind : "para"
+        readonly property int level: blk && blk.level ? blk.level : 0
+        readonly property bool mono: kind === "code" || kind === "table"
+        readonly property bool hasHtml: !mono && blk && blk.html && blk.html.length > 0
+        readonly property bool first: index === 0
+        readonly property bool last: index === (model ? model.length - 1 : 0)
+
+        readonly property real topPad: first ? 0.0
+            : kind === "heading" ? (level <= 1 ? 14.0 : 12.0)
+            : kind === "rule" ? 8.0 : 5.0
+        readonly property real bottomPad: last ? 0.0
+            : kind === "heading" ? 7.0
+            : kind === "rule" ? 8.0 : 5.0
+        // Le fond d'un bloc de code est dessine, pas negocie : 6 px autour du texte.
+        readonly property real monoPad: mono ? 6.0 : 0.0
+        readonly property real indent: kind === "quote" ? 12.0
+            : (kind === "list" || kind === "task") ? 8.0 : 0.0
+
+        // parent = la colonne des blocs, dont la largeur est celle du contenu de la carte
+        width: parent.width
+        height: kind === "rule" ? (topPad + 1.0 + bottomPad)
+                                : (text.y + text.height + monoPad + bottomPad)
+
+        color: mono ? (kind === "code" ? "#16FFFFFF" : "#14FFFFFF") : "transparent"
+        border.width: mono ? 1 : 0
+        border.color: "#1AFFFFFF"
+        radius: mono ? 6 : 0
+
+        Text {
+            id: text
+            visible: chunk.kind !== "rule"
+            x: chunk.indent + (chunk.mono ? 8.0 : 0.0)
+            y: chunk.topPad + chunk.monoPad
+            width: chunk.width - chunk.x - (chunk.mono ? 8.0 : 0.0)
+            text: chunk.blk ? (chunk.mono || !chunk.hasHtml ? chunk.blk.text : chunk.blk.html) : ""
+            textFormat: chunk.hasHtml ? Text.RichText : Text.PlainText
+            color: chunk.kind === "quote" ? "#AAe9eaee"
+                 : chunk.mono ? "#DCe9eaee" : win.ink
+            font.family: chunk.mono ? win.monoFont : win.uiFont
+            font.pixelSize: chunk.kind === "heading"
+                              ? (chunk.level <= 1 ? 17 : chunk.level === 2 ? 15
+                                                   : chunk.level === 3 ? 14 : 13)
+                              : 13
+            font.bold: chunk.kind === "heading"
+            wrapMode: Text.WordWrap
+            lineHeight: 1.25
+        }
+
+        // Le filet, dessine : le texte riche de Qt Quick ne sait pas rendre <hr>.
+        Rectangle {
+            id: ruleLine
+            visible: chunk.kind === "rule"
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width
+            height: 1
+            color: "#32FFFFFF"
+        }
+
+        // La citation garde sa barre de la v1 (2 px, a gauche du texte).
+        Rectangle {
+            id: quoteBar
+            visible: chunk.kind === "quote"
+            x: 3
+            y: text.y
+            width: 2
+            height: text.height
+            color: "#3CFFFFFF"
+        }
+    }
+
+    /*
+     * Le meme bloc, mesure en une seule ligne et sans fond : c'est lui qui dit
+     * quelle largeur la carte doit prendre. Le texte mesure est celui rendu (les
+     * marques du markdown sont deja retirees par le parseur).
+     */
+    component NaturalChunk: Text {
+        required property var modelData
+
+        readonly property var blk: modelData
+        readonly property string kind: blk ? blk.kind : "para"
+        readonly property bool mono: kind === "code" || kind === "table"
+
+        text: blk ? (blk.plain && blk.plain.length ? blk.plain : blk.text) : ""
+        color: win.ink
+        font.family: mono ? win.monoFont : win.uiFont
+        font.pixelSize: kind === "heading"
+                          ? (blk.level <= 1 ? 17 : blk.level === 2 ? 15
+                                 : blk.level === 3 ? 14 : 13)
+                          : 13
+        font.bold: kind === "heading"
     }
 
     // --- les bulles de conversation ---
@@ -168,12 +280,17 @@ Window {
             required property string role
             required property string text
             required property string msgId
-            required property string html
+            required property string blocks
+            required property bool parsed
 
+            // Le modele de bulles ne sait pas garder un tableau : les blocs y
+            // tiennent en JSON, et une seule lecture par bulle le reconvertit.
+            readonly property var blockList: parsed ? JSON.parse(blocks) : []
+            readonly property int blockCount: blockList ? blockList.length : 0
             readonly property bool agent: role === "agent"
-            // Une bulle fermee porte son html venu du parseur hors-UI ; en
-            // streaming (ou pour une bulle user), on reste en PlainText.
-            readonly property bool rich: agent && html.length > 0
+            // Une bulle fermee porte ses blocs venus du parseur hors-UI ; en
+            // streaming (ou pour une bulle user), elle reste en texte brut.
+            readonly property bool rich: agent && parsed && blockCount > 0
 
             width: bubblesView.width
             height: card.height
@@ -217,8 +334,12 @@ Window {
                 // 460 px : une reponse courte donnait une carte courte), et le
                 // padding est le plus etroit possible : 12 px sur les cotes, 8 px en
                 // haut et en bas. Une bulle d'une seule ligne est donc tres petite.
-                width: Math.min(cell.width - 2 * win.halo, natural.width + 24)
-                height: body.implicitHeight + 16
+                // En riche, c'est la largeur naturelle de ses blocs qui decide.
+                width: Math.min(cell.width - 2 * win.halo,
+                                Math.max(cell.rich ? naturalBlocks.childrenRect.width
+                                                   : natural.implicitWidth,
+                                          40) + 24)
+                height: (cell.rich ? blockCol.implicitHeight : body.implicitHeight) + 16
                 x: cell.agent ? win.halo : (cell.width - win.halo - width)
 
                 // La matiere de la carte, unique source de l'ombre. L'effet de Qt
@@ -240,11 +361,12 @@ Window {
 
                 Text {
                     id: body
+                    visible: !cell.rich
                     x: 12
                     y: 8
                     width: parent.width - 24
-                    text: cell.rich ? cell.html : cell.text
-                    textFormat: cell.rich ? Text.RichText : Text.PlainText
+                    text: cell.text
+                    textFormat: Text.PlainText
                     color: win.ink
                     font.family: win.uiFont
                     font.pixelSize: 13
@@ -252,10 +374,42 @@ Window {
                     lineHeight: 1.25
                 }
 
+                /*
+                 * La bulle fermée : une colonne de blocs, un par bloc du markdown.
+                 * C'est la carte qui porte l'air entre eux (voir BlockChunk), comme
+                 * en v1 — pas un CSS que Qt ecrase.
+                 */
+                Column {
+                    id: blockCol
+                    visible: cell.rich
+                    x: 12
+                    y: 8
+                    width: card.width - 24
+                    spacing: 0
+
+                    Repeater {
+                        model: cell.blockList
+                        delegate: BlockChunk {}
+                    }
+                }
+
                 // Deuxieme passe de mesure : la largeur naturelle du texte, pour
-                // que la carte user colle a son contenu (comme la bulle v1). Elle
-                // porte la meme mise en forme que body : une bulle riche se mesure
-                // en riche, sinon la carte se trompe de largeur.
+                // que la carte colle a son contenu (comme la bulle v1). Elle porte
+                // la meme mise en forme que ce qui se rend : une bulle riche se
+                // mesure bloc par bloc, sinon la carte se trompe de largeur.
+                Column {
+                    id: naturalBlocks
+                    visible: false
+                    x: 0
+                    y: 0
+                    spacing: 0
+
+                    Repeater {
+                        model: cell.blockList
+                        delegate: NaturalChunk {}
+                    }
+                }
+
                 Text {
                     id: natural
                     visible: false
@@ -825,8 +979,30 @@ Window {
             for (let k = 1; k < repeat; ++k)
                 text += " " + lines[(i + k) % lines.length];
             // insert(0) : le modele est du plus recent au plus vieux.
-            bubbleModel.insert(0, { role: (i % 2) === 0 ? "agent" : "user", text: text, msgId: "", html: "" });
+            bubbleModel.insert(0, { role: (i % 2) === 0 ? "agent" : "user", text: text, msgId: "", blocks: "[]", parsed: false });
         }
+    }
+
+    /*
+     * Une bulle de markdown complet, sans hub : l'echantillon qui sert a regarder
+     * le rendu des blocs (titre, liste, code, citation, tableau, filet, cases)
+     * hors connexion, en AICE_STRESS.
+     */
+    function seedMarkdown() {
+        const sample = "## Rapport du hub\n\n"
+            + "Voici ce que j'ai trouve, en **deux** points.\n\n"
+            + "- le premier point\n"
+            + "- le second, en **gras**\n"
+            + "- le troisieme avec du `code en ligne`\n\n"
+            + "```python\ndef repond(requete):\n    retour = \"ok\"\n    return retour\n```\n\n"
+            + "> une citation utile, avec son air a elle\n\n"
+            + "| cle | valeur |\n| --- | --- |\n| hub | 534584 |\n| session | b4f893 |\n\n"
+            + "---\n\n"
+            + "- [ ] a faire\n"
+            + "- [x] fait\n\n"
+            + "La conclusion, en une phrase.";
+        bubbleModel.insert(0, { role: "agent", text: sample, msgId: "seed-md", blocks: "[]", parsed: false });
+        markdown.parse("seed-md", sample);
     }
 
     /*
@@ -841,7 +1017,7 @@ Window {
 
         // Du plus recent au plus vieux : la bulle user d'abord, la reponse
         // agent par-dessus, donc la reponse se cale tout contre la barre.
-        bubbleModel.insert(0, { role: "user", text: text, msgId: "", html: "" });
+        bubbleModel.insert(0, { role: "user", text: text, msgId: "", blocks: "[]", parsed: false });
         bubblesView.followNewest();
 
         hub.send(text);
@@ -849,16 +1025,16 @@ Window {
 
     /*
      * Une bulle fermee (le message suivant est ouvert, ou le tour a termine)
-     * part au parseur hors-UI : son html reviendra par applyHtml(), et elle
-     * basculera en RichText a ce moment-la. Pendant le streaming, la bulle
-     * reste en PlainText — on ne reparse pas a chaque chunk.
+     * part au parseur hors-UI : ses blocs reviendront par applyBlocks(), et elle
+     * basculera en rendu par blocs a ce moment-la. Pendant le streaming, la bulle
+     * reste en texte brut — on ne reparse pas a chaque chunk.
      */
     function finalizeBubble(row) {
         if (row < 0 || row >= bubbleModel.count)
             return;
         const bubble = bubbleModel.get(row);
         const msgId = bubble.msgId || "";
-        if (bubble.role !== "agent" || !bubble.text.length || !msgId.length || (bubble.html || "").length)
+        if (bubble.role !== "agent" || !bubble.text.length || !msgId.length || bubble.parsed)
             return;
         markdown.parse(msgId, bubble.text);
     }
@@ -890,7 +1066,7 @@ Window {
             return;
         }
 
-        bubbleModel.insert(0, { role: role, text: text, msgId: messageId, html: "" });
+        bubbleModel.insert(0, { role: role, text: text, msgId: messageId, blocks: "[]", parsed: false });
         streamRow = 0;
         streamMessageId = messageId;
         bubblesView.followNewest();
@@ -908,12 +1084,13 @@ Window {
         settleTimer.start();
     }
 
-    /* Le html venu du parseur (hors UI) rattrape sa bulle par son messageId. */
-    function applyHtml(messageId, html) {
+    /* Les blocs venus du parseur (hors UI) rattrapent leur bulle par son messageId. */
+    function applyBlocks(messageId, blocks) {
         for (let i = 0; i < bubbleModel.count; ++i) {
             const bubble = bubbleModel.get(i);
             if ((bubble.msgId || "") === messageId) {
-                bubbleModel.setProperty(i, "html", html);
+                bubbleModel.setProperty(i, "blocks", JSON.stringify(blocks || []));
+                bubbleModel.setProperty(i, "parsed", true);
                 glass.scheduleRefresh();
                 return;
             }
@@ -946,10 +1123,10 @@ Window {
     }
 
     Connections {
-        // Le parseur vit en dehors du hub : son html parse revient par sa
-        // propre connexion et rattrape sa bulle hors du chemin du pont.
+        // Le parseur vit en dehors du hub : ses blocs parses reviennent par sa
+        // propre connexion et rattrapent leur bulle hors du chemin du pont.
         target: markdown
-        function onParsed(messageId, html) { win.applyHtml(messageId, html); }
+        function onParsed(messageId, blocks) { win.applyBlocks(messageId, blocks); }
     }
 
     // Bourrage d'affichage (AICE_PUMP=1) : redessine en continu, pour que le
@@ -979,8 +1156,11 @@ Window {
         glass.attach(win);
         // Les bulles poussees hors de la zone de conversation sont exclues du verre.
         glass.setClipItem(bubblesView)
-        if (glass.stress)
+        if (glass.stress) {
             stressSeed(2000);
+            // Le markdown complet, sans hub : pour regarder le rendu des blocs.
+            seedMarkdown();
+        }
         promptArea.forceActiveFocus();
         win.visible = true;
         settleTimer.start();

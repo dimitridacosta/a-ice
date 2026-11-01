@@ -2,7 +2,7 @@
 # Le v1 (Qt Widgets) n'est pas touche : ce binaire sert a valider le verre
 # (flou KWin par carte, barre attrapable, liste virtualisee) puis le client hub.
 
-find_package(Qt6 REQUIRED COMPONENTS Quick Network WebSockets)
+find_package(Qt6 REQUIRED COMPONENTS Quick Gui Network WebSockets)
 
 add_executable(a-ice-m1
     main.cpp
@@ -19,6 +19,18 @@ qt_add_resources(a-ice-m1 "aice_m1"
     FILES
         qml/Main.qml
 )
+
+# --- Test unitaire du decoupage markdown (M3a) -------------------------------
+# Le decoupage est une fonction libre : le test la teste sans hub et sans corps.
+# Qt6::Gui pour QTextDocumentFragment::fromMarkdown. Run : ./test_md (et ./test_md --dump
+# pour lire le HTML que Qt rend).
+add_executable(test_md
+    ../tests/test_md.cpp
+    Markdown.h
+    Markdown.cpp
+)
+
+target_link_libraries(test_md PRIVATE Qt6::Core Qt6::Gui)
 
 target_link_libraries(a-ice-m1 PRIVATE
     Qt6::Quick
