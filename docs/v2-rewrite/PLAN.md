@@ -23,7 +23,10 @@ Voir [ADR-0001-techno.md](ADR-0001-techno.md). En bref : C++17 + **Qt Quick 7** 
 
 *Résultat : [M1-poc-ui.md](M1-poc-ui.md). Binaire `a-ice-m1` (dossier `poc/`),
 fenêtre 800 × 800, ~6 ms/frame en stress à 2 000 bulles, 11 cartes de verre : les
-trois ingrédients tiennent. Reste à valider à l'œil (flou, drag natif, layer-shell).*
+trois ingrédients tiennent. Les proportions de la v0 y sont remises à l'identique
+(cartes à 12 px des côtés, air de 12 px, barre de 46 px) et la barre porte une
+poignée de redimensionnement à son bord droit. Reste à valider à l'œil (flou, drag
+natif, prise de la poignée, layer-shell).*
 1. Fenêtre frameless translucide : blur via `KWindowEffects::enableBlurBehind` (test aussi `ext_background_effect_v1`, Plasma 6.7+), `KeepAbove`, skipTaskbar, LayerShellQt.
 2. Barre de prompt flottante : déplaçable via `startSystemMove()`, position persistée (`QSettings`).
 3. Zone bulles : `ListView` virtualisé, 2 000 bulles factices, scroll fluide, fade-out (dégradé alpha) haut/bas, hauteur paramétrable (plein écran par défaut).

@@ -66,7 +66,7 @@ cd build/poc && ./a-ice-m1 --size 800
 
 | Variable | Effet |
 | --- | --- |
-| `--size 800` | côté de la fenêtre carrée (défaut 800) |
+| `--size 800` | côté de la fenêtre carrée (défaut 800) ; `--size 900x640` pour une fenêtre non carrée |
 | `AICE_STRESS=1` | 2 000 bulles factices au lieu de 9 |
 | `AICE_PUMP=1` | redessine en continu : le frame time s'auto-mesure sans interaction |
 | `AICE_HUD=1/0` | badge de mesures dans la fenêtre (visible par défaut) |
@@ -78,8 +78,9 @@ cd build/poc && ./a-ice-m1 --size 800
 | `QT_QPA_PLATFORM=offscreen` | vérification hors écran (voir la mise en garde sur les effets GPU) |
 
 Le badge affiche `frame … ms · pic … ms · N bulles · M cartes`, plus deux liens qui
-mesurent le coût GPU à la volée (**ombre**, **fade**) et `fenetre natif` ou
-`fenetre par deltas` selon que le compositeur a bien voulu le `startSystemMove()`.
+mesurent le coût GPU à la volée (**ombre**, **fade**), `fenetre natif` ou
+`fenetre par deltas` selon que le compositeur a bien voulu le `startSystemMove()`,
+et `taille <largeur> x <hauteur> (natif / par deltas)` pour le redimensionnement.
 
 ### Voir le rendu sans les yeux sur l'écran
 
@@ -118,10 +119,11 @@ Stress réel sur l'écran Wayland (KDE/Bazzite), 2 000 bulles, redraw continu, 8
 - Le dump `AICE_DEBUG=1` donne l'alpha effectif de chaque carte : à 2 000 bulles, la
   carte coupée en haut de la zone est à `alpha 0,25` et les cartes entièrement sorties
   sont écartées du verre.
-- Empilement vérifié à la mesure — identique à la v1 : cartes agent pleine largeur
-  (`760 @ x=20`), carte user plus petite alignée à droite (`104 @ x=676`), barre à
-  `760x52 @ 20,730`, y des bulles 676, 621, 499, 400, 300, 223, 146, 92, 37,
-  espacement de 6 px. Les bulles sont bien **ancrées en bas**, les anciennes montent.
+- Empilement vérifié à la mesure — proportions de la v1 (voir la section
+  « Proportions ») : cartes agent pleine largeur (`776 @ x=12`), carte user plus
+  petite alignée à droite (`383 @ x=405`, bord droit à 12 px de la fenêtre), barre
+  `776x46 @ 12,735`, y des bulles 265, 173, 81, 17, espacement de 12 px entre les
+  **faces** des cartes. Les bulles sont bien **ancrées en bas**, les anciennes montent.
 
 ## Ce qui est acquis
 
@@ -129,6 +131,7 @@ Stress réel sur l'écran Wayland (KDE/Bazzite), 2 000 bulles, redraw continu, 8
 | --- | --- | --- |
 | Verre par carte | `glassCard` dans l'arbre QML → `QRegion` arrondies + `enableBlurBehind` + `setMask` | ✅ |
 | Barre attrapable | `QWindow::startSystemMove()` (`glass.startMove()`), fallback deltas côté QML, position dans `QSettings` `[window]` | ✅ le natif est-il réellement pris : à confirmer à l'œil |
+| Barre redimensionnable | bord droit de la barre : `QWindow::startSystemResize(RightEdge\|BottomEdge)` (`glass.startResize()`), fallback deltas côté QML | ✅ la poignée saisit-elle : à confirmer à l'œil |
 | Bulles virtualisées | `ListView` + `cacheBuffer`, 2 000 lignes, 10 régions | ✅ |
 | Fade haut/bas | opacité par carte = fraction de la bulle sortie de la zone | ✅ (mesuré : 1 → 0,25 → écartée du verre) |
 | Ombre progressive | effet d'ombre de `MultiEffect` posé sur la **matière** de la carte, teinte bleue | ✅ |
@@ -192,7 +195,78 @@ dont l'enfant de fond (`cardFill`, `pillFill`, `hudFill`) porte seul
 **hors du layer**, donc il n'a pas d'ombre. Avant cette séparation, chaque glyphe
 heritait de sa propre ombre : un halo sombre sous les lettres.
 
+## Proportions : celles de la v0, remises à l'identique
+
+Le POC s'était écarté de l'identité connue (cartes à 20 px des bords, air de
+12 px autour de chaque carte, barre de 52 px, textes à 13 px du haut). Les
+proportions ont été **relevées dans la v1** et reposées telles quelles.
+
+Relevés dans `src/` (v1, Qt Widgets) :
+
+| Élément | v1 | Source |
+| --- | --- | --- |
+| rayon carte / barre | 16 / 22 | `Bubble.cpp:234`, `ChatWidget.cpp:73` |
+| air autour de la carte dans sa bulle | 4 px | `kGlassInset` (`Glass.h:9`) |
+| marges de la liste de bulles | 8 (gauche/droite), 13 (haut), 8 (bas) | `ChatWidget.cpp:183` |
+| espacement entre bulles | 4 | `ChatWidget.cpp:184` |
+| contenu d'une bulle | 16 px à gauche, 12 px en haut | `Bubble.cpp:250`, `fitToContent` (`hPad 32`, `vPad 24`) |
+| police de contenu | 13 px | `kContentStyle` (`Bubble.cpp:108`) |
+| marges de la barre | 8 (côtés), 6 (haut), 19 (bas) | `ChatWidget.cpp:285` |
+| contenu de la barre | 18 (gauche), 8 (haut), 10 (droite), 8 (bas) | `ChatWidget.cpp:206` |
+| saisie | 14 px de police, 30 px de haut minimum | `ChatWidget.cpp:221`, `:238` |
+| bouton d'envoi | 34 x 34, rayon 17 | `ChatWidget.cpp:262` |
+
+D'où, en v1, les **faces** des cartes à 12 px des côtés (8 + 4), 17 px du haut
+(13 + 4), et 12 px d'air entre deux cartes (4 + 4 + 4).
+
+Application dans le POC (`poc/qml/Main.qml`) :
+
+| Réglage | Avant | Après | Note |
+| --- | --- | --- | --- |
+| `inset` (marges de la zone de bulles) | 8 | 8 inchangé | = marges de la liste v1 |
+| `halo` (air autour de la carte) | 12 | **4** | = `kGlassInset` ; les cartes sont donc à 12 px des côtés |
+| `spacing` des bulles | 6 | **12** | ici la carte EST la bulle : l'espacement porte seul les 12 px d'air |
+| marges haute/basse de la zone | 0 / 6 | **17 / 22** | faces des cartes alignées sur la v1 |
+| texte de carte | `x 16, y 13`, hauteur = texte + 26 | `x 16, y 12`, hauteur = texte + **24** | `hPad 32`, `vPad 24` de la v1 |
+| carte user | texte + 34 | texte + **32** | idem |
+| barre | marges 20 / 20 / 18, hauteur `max(52, …+24)` | marges **12 / 12 / 19**, hauteur `max(46, …+28)` | 46 = 30 de saisie + 8 + 8 ; 12 = 8 + 4 |
+| contenu de la barre | marges 12 / 10 / 8 / 8, poignée de 18 | marges **6 / 10 / 8 / 8**, poignée de **12** | la saisie commence à 18 px du bord, comme en v1 |
+
+Capture de contrôle à l'appui (`poc/shots/`), et dump `AICE_DEBUG=1` :
+`776x80 @ 12,81`, `776x46 @ 12,735` (barre), carte user `383x43 @ 405,376` — les
+faces à 12 px des côtés, 12 px entre les cartes.
+
+Mesure de la même manœuvre côté fenêtre non carrée : `--size 1040x520` donne
+`1016x80 @ 12,23`, `1016x46 @ 12,455`, carte user `383 @ x=645` (bord droit à
+12 px) — tout suit l'ancrage, sans retouche.
+
+## La poignée de redimensionnement
+
+`resizeEdge` : un `Item` de 10 px collé au bord droit de la barre, sur toute sa
+hauteur, avec un `MouseArea` (curseur `SizeFDiagCursor`) et un fin repère visuel
+qui grandit au survol. Les 10 px sont exactement la marge de droite du contenu de
+la barre : la poignée ne recouvre pas le bouton d'envoi.
+
+- Côté C++ : `GlassHelper::startResize(int edges)` =
+  `QWindow::startSystemResize(Qt::Edges(edges))`, avec `resizeNative` dans le
+  badge comme `moveNative`. Le POC demande `RightEdge | BottomEdge` : les bords
+  haut et gauche ne bougent pas, la barre reste où elle est.
+- Côté QML : si le composeur n'ajuste rien (une fenêtre sans décoration peut
+  **accepter** le geste sans le faire), on reprend la main après 220 ms sans
+  changement de taille, et on ajuste par deltas — en repartant de la position
+  courante du curseur pour ne pas empiler deux redimensionnements.
+- Minimum posé côté fenêtre : `minimumWidth 320`, `minimumHeight 380` (en dessous,
+  la barre de 46 px et une carte ne tiennent plus).
+- La taille n'est **pas** persistée dans `QSettings` : seule la position l'est.
+
+Deux pièges ont été évités d'emblée, ils sont repris plus bas dans « Pièges ».
+
 ## Ce qui reste à valider **à l'œil**
+
+0. **La poignée de taille** : attraper le bord droit de la barre — lire dans le
+   badge si la taille passe par `natif` ou `par deltas`, et vérifier que le geste
+   ne mange ni le bouton d'envoi ni le drag de la barre.
+
 
 1. **La tête du flou Plasma** (thème Utterly-Round) : `enableBlurBehind` suit-il les
    coins arrondis de la `QRegion` ou les englobe-t-il dans un rectangle ?
@@ -254,14 +328,33 @@ cela derive, on coupe `maxBlur` en premier, pas `intensity`.
 - **Un `header: Item {}` dimensionné depuis `contentHeight` casse la virtualisation** :
   plus aucun délégué réalisé, et la région de verre ne compte plus qu'une carte.
   On ancre en bas autrement : `verticalLayoutDirection: ListView.BottomToTop` +
-  modèle **du plus récent au plus vieux** (`insert(0, …)`). « Être à la fin » devient
-  `contentY >= contentYMax - 4`.
+  modèle **du plus récent au plus vieux** (`insert(0, …)`). « Être à la fin » se calcule :
+  voir le piège `contentYMax` juste au-dessous.
 - `width: view ? view.width : 0` dans un délégué rend une largeur 0 (et donc des
   largeurs de carte **négatives** dans le dump). Écrire `width: bubblesView.width`.
 - `native` est un **identifiant réservé** en QML.
 - Le `TextEdit` du noyau QtQuick n'a **ni `accepted`, ni `placeholderText`/
   `placeholderColor`** : `Keys.onReturnPressed` + un `Text` frère pour le texte fantôme.
 - Une propriété ne peut pas avoir deux gestionnaires (`Property value set multiple times`).
+- **`contentYMax` n'existe pas** dans l'API `Flickable` de Qt 6.11 (ni
+  `contentXMax`) : le binding `atNewest: contentY >= contentYMax - 4` ne cassait
+  rien de visible, il levait une ligne `ReferenceError` dans stderr et
+  `followNewest()` ne faisait plus rien — la fenêtre ne suivait donc plus la bulle
+  la plus récente. La borne se calcule : `newestY = originY + contentHeight -
+  height` (`atYEnd` donne le même bord). Sonde à l'appui, zone de 761 px :
+  `contentY = -761` au bord le plus récent, `originY = -14 188` à 200 bulles et
+  `-420` à 6 bulles.
+- **`Flick.StopAtBounds` n'est plus un identifiant connu** en Qt 6.11
+  (`ReferenceError: Flick is not defined`) : écrire `Flickable.StopAtBounds`.
+  Les deux lignes ci-dessus ne se lisaient **que** dans stderr — vérifier qu'un run
+  ne contient aucun `ReferenceError`/`TypeError` devrait être un réflexe.
+- **Un objet de clic hors du verre est aveugle** : la fenêtre est masquée sur la
+  région des cartes (`setMask`), donc un `MouseArea` posé dans la marge noire ne
+  reçoit aucun événement. La poignée de taille est obligatoirement dans la barre.
+- **Deux `MouseArea` dans la même carte** : celui déclaré après (ou avec un `z`
+  plus haut) capte le geste en premier. `resizeEdge` est déclarée après `pillDrag`
+  et porte `z: 1` ; sinon le drag de la barre mangerait la poignée. Et ses 10 px ne
+  doivent pas mordre sur le bouton d'envoi, sinon le bouton devient inaccessible.
 - Les géométries transitoires pendant un layout peuvent remonter des positions
   négatives dans le dump (le badge HUD à `-233,20`) : c'est sans effet sur le résultat.
 
@@ -271,7 +364,8 @@ cela derive, on coupe `maxBlur` en premier, pas `intensity`.
 les cartes réelles), la liste ancrée en bas + modèle le plus récent en tête, le fade
 par carte (fraction sortie de la zone), l'ombre par effet Qt (teintée, posée sur la
 matière seule), le drag natif avec
-fallback, et l'outil de capture `AICE_SHOT`. À ne **pas** garder : `seedFake()` et
+fallback, le redimensionnement par le bord droit de la barre, et l'outil de capture
+`AICE_SHOT`. À ne **pas** garder : `seedFake()` et
 `replies` (bouchons de démo), le badge de mesures (outil de mesure, pas une feature),
 et les variables `AICE_*` côté moteur. Le point d'entrée du vrai travail : brancher
 le client du hub zcode-acp à la place de `send()` / `streamTimer`.
