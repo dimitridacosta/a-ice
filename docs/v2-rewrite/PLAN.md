@@ -65,11 +65,17 @@ tour close par le `turnState` du pont. Voir la dernière section de
    réécrit), et le tool zcode-emissary le lit en premier (zcode-acp en repli).
 
 Reste en M3 : le retour de l'œil — un tour réel (end_turn), les clics de la
-carte-liste et le changement d'instance. Revue faite par l'émissaire (2026-11-01) :
-les trois pieces relues ligne à ligne, un vrai bug corrigé au passage — le
-gestionnaire `onParsed` du parseur était branché sur les `Connections` du hub,
-qui ne porte pas ce signal : le html des bulles fermées ne serait jamais
-revenu (commit 1c4769c, `Connections { target: markdown }` dedicate).
+carte-liste et le changement d'instance. Revue faite par l'émissaire
+(2026-11-01, commits 1c4769c et 15e8ee1) : les trois pieces relues ligne à
+ligne, deux vrais bugs corrigés au passage. Piece 1 — le gestionnaire
+`onParsed` du parseur était branché sur les `Connections` du hub, qui ne porte
+pas ce signal : le html des bulles fermées ne serait jamais revenu
+(`Connections { target: markdown }` dedicace). Piece 2 — `disconnectHub` ne
+vidait pas la liste des sessions : apres coupure, la carte gardait des lignes
+cliquables vers un pont mort (la liste se vide a la coupure, se retrace a
+openSessionReady). Piece 3 relue contre le tool de reference
+zcode-emissary.mjs : memes cles (`hubUrl`, `token`), migration ecrite une
+seule fois, repli zcode-acp correct — rien a changer.
 
 Reste pour M4 : polish du corps — ombres, dégradés, animations d'entrée, thème
 complet, doc utilisateur ; rejuger les acquis d'origin/v2 (layer-shell par
