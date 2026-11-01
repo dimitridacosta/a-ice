@@ -16,6 +16,7 @@
 #include <cstdio>
 
 #include "GlassHelper.h"
+#include "HubClient.h"
 
 int main(int argc, char *argv[])
 {
@@ -35,11 +36,45 @@ int main(int argc, char *argv[])
     parser.addOption(QCommandLineOption(QStringLiteral("size"),
         QStringLiteral("Cote de la fenetre carre (defaut: 800)."),
         QStringLiteral("px"), QStringLiteral("800")));
+    parser.addOption(QCommandLineOption(QStringLiteral("prompt"),
+        QStringLiteral("Envoie ce prompt des que la session ACP est ouverte (test M2)."),
+        QStringLiteral("texte")));
     parser.process(app);
 
     GlassHelper glass;
+    HubClient hub;
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("glass"), &glass);
+    engine.rootContext()->setContextProperty(QStringLiteral("hub"), &hub);
+
+    // Test M2 : --prompt envoie un tour des que la session est ouverte,
+    // AICE_TURN_QUIT ferme la fenetre des que ce tour est termine.
+    if (parser.isSet(QStringLiteral("prompt")))
+        hub.setPrompt(parser.value(QStringLiteral("prompt")));
+
+    // Le hub ne parle que par ses signaux : sans ces lignes, un echec de
+    // jonction ou un tour qui ne repond pas ne laisse aucune trace.
+    int chunks = 0;
+    int chars = 0;
+    QObject::connect(&hub, &HubClient::chunkReceived, &app, [&chunks, &chars](const QString &text) {
+        ++chunks;
+        chars += text.size();
+    });
+    QObject::connect(&hub, &HubClient::failed, &app, [](const QString &message) {
+        fprintf(stderr, "a-ice-m1 : hub %s\n", qUtf8Printable(message));
+    });
+    if (qEnvironmentVariableIsSet("AICE_DEBUG")) {
+        QObject::connect(&hub, &HubClient::statusChanged, &app, [&hub]() {
+            fprintf(stderr, "a-ice-m1 : hub %s\n", qUtf8Printable(hub.status()));
+        });
+    }
+    if (qEnvironmentVariableIsSet("AICE_TURN_QUIT")) {
+        QObject::connect(&hub, &HubClient::turnEnded, &app, [&app, &chunks, &chars](const QString &reason) {
+            fprintf(stderr, "a-ice-m1 : tour termine (%s), %d chunks, %d caracteres\n",
+                    qUtf8Printable(reason), chunks, chars);
+            app.quit();
+        });
+    }
 
     // Taille de test du principe : carree, 800 x 800 par defaut.
     engine.rootContext()->setContextProperty(

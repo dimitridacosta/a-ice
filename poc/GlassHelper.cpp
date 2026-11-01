@@ -124,9 +124,14 @@ void GlassHelper::attach(QQuickWindow *window)
 
     // Capture de controle (AICE_SHOT=/chemin.png) : permet de voir le rendu sans
     // etre devant l'ecran. AICE_SHOT_QUIT=1 ferme l'appli juste apres.
+    // AICE_SHOT_MS=<millisecondes> fixe le delai : utile pour capturer pendant un
+    // tour du hub, la ou la reponse est encore en train de couler.
     if (qEnvironmentVariableIsSet("AICE_SHOT")) {
         const QString path = qEnvironmentVariable("AICE_SHOT");
-        QTimer::singleShot(900, this, [this, path]() {
+        int delay = qEnvironmentVariableIntValue("AICE_SHOT_MS");
+        if (delay <= 0)
+            delay = 900;
+        QTimer::singleShot(delay, this, [this, path]() {
             grabShot(path);
             if (qEnvironmentVariable("AICE_SHOT_QUIT") == "1")
                 QGuiApplication::quit();

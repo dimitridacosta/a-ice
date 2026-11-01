@@ -14,7 +14,8 @@ import QtQuick.Effects
  *
  * Tout ce qui est mesure ici (flou, deplacement, liste virtualisee, fade) est
  * ce qu'on validait avant d'engager la refonte : voir docs/v2-rewrite/PLAN.md.
- * Le moteur agentique n'est pas encore branche : les reponses sont simulees.
+ * Depuis M2, les reponses ne sont plus simulees : elles viennent du hub
+ * zcode-acp (voir HubClient.cpp), et le corps reste fidele a l'identite v1.
  */
 Window {
     id: win
@@ -36,7 +37,6 @@ Window {
     // Reglages modifies a la volee depuis le badge (mesure du cout GPU).
     property bool shadowOn: glass.shadow   // AICE_SHADOW=0 pour mesurer sans ombre
     property bool fadeOn: true
-    property bool generating: false
 
     width: pocSize
     height: pocSize
@@ -77,11 +77,10 @@ Window {
         autoPaddingEnabled: true
     }
 
-    // --- contenu (factice en M1) ---
+    // --- les bulles de conversation ---
     ListModel { id: bubbleModel }
 
-    property var streamWords: []
-    property int streamWord: 0
+    // La bulle agent en cours de remplissage (index dans le modele, -1 sinon).
     property int streamRow: -1
 
     /* ---------------------------------------------------------------- bulles */
@@ -314,10 +313,10 @@ Window {
                 width: 34
                 height: 34
                 radius: 17
-                color: win.generating ? "#D2DA4453" : "#C83478DA"
+                color: hub.ready ? (hub.generating ? "#D2DA4453" : "#C83478DA") : "#60555F6E"
                 Text {
                     anchors.centerIn: parent
-                    text: win.generating ? "\u25a0" : "\u2191"
+                    text: hub.generating ? "\u25a0" : "\u2191"
                     color: "#ffffff"
                     font.pixelSize: 16
                     font.bold: true
@@ -325,7 +324,8 @@ Window {
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: win.generating ? win.stopStream() : win.send()
+                    // Le meme bouton sert de ciseau pendant un tour.
+                    onClicked: hub.generating ? hub.cancelTurn() : win.send()
                 }
             }
 
@@ -366,6 +366,169 @@ Window {
                 color: "#70e9eaee"
                 font.pixelSize: 14
                 wrapMode: Text.WordWrap
+            }
+        }
+    }
+
+    /* --------------------------------------------- carte d'autorisation (M2) */
+
+    /*
+     * Le pont retransmet `session/request_permission` : la demande du moteur
+     * devient une carte de verre au-dessus de la barre, une option = un bouton.
+     * C'est le seul endroit de l'UI ou le corps decide de laisser un outil agir.
+     */
+    Item {
+        id: permCard
+
+        property bool glassCard: true
+        property int glassRadius: win.cardRadius
+
+        visible: hub.permissionPending
+
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: pill.top
+        anchors.bottomMargin: 16
+
+        width: Math.min(win.width - 2 * win.inset, 470)
+        height: permCol.height + 26
+
+        onYChanged: glass.scheduleRefresh()
+        onHeightChanged: glass.scheduleRefresh()
+        onVisibleChanged: glass.scheduleRefresh()
+
+        Rectangle {
+            id: permFill
+
+            anchors.fill: parent
+            radius: win.cardRadius
+            color: "#8A2A1E22"
+            border.color: "#40FFB37A"
+            border.width: 1
+
+            layer.enabled: win.shadowOn
+            layer.samples: 4
+            layer.effect: CardShadow { intensity: 0.9; drop: 9 }
+        }
+
+        Column {
+            id: permCol
+            x: 16
+            y: 13
+            spacing: 7
+            width: permCard.width - 32
+
+            Text {
+                width: permCol.width
+                text: "le moteur demande : " + hub.permissionTool
+                color: win.ink
+                font.pixelSize: 13
+                font.bold: true
+            }
+            Text {
+                width: permCol.width
+                text: hub.permissionDetail
+                color: "#A8e9eaee"
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+
+            Row {
+                spacing: 8
+                Repeater {
+                    model: hub.permissionOptions
+                    delegate: Rectangle {
+                        required property var modelData
+
+                        width: optionLabel.width + 22
+                        height: 28
+                        radius: 14
+                        color: modelData.kind === "reject" ? "#4AD24453" : "#5A3478DA"
+                        border.color: "#30FFFFFF"
+                        border.width: 1
+
+                        Text {
+                            id: optionLabel
+                            anchors.centerIn: parent
+                            text: (modelData.name && modelData.name.length)
+                                      ? modelData.name : modelData.optionId
+                            color: win.ink
+                            font.pixelSize: 12
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: hub.respondPermission(modelData.optionId)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* -------------------------------------------------- carte du hub (M2) */
+
+    Item {
+        id: hubCard
+
+        property bool glassCard: true
+        property int glassRadius: win.hudRadius
+
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.topMargin: 20
+        anchors.leftMargin: 20
+
+        width: hubCol.implicitWidth + 20
+        height: hubCol.implicitHeight + 14
+
+        onXChanged: glass.scheduleRefresh()
+        onYChanged: glass.scheduleRefresh()
+        onHeightChanged: glass.scheduleRefresh()
+        onWidthChanged: glass.scheduleRefresh()
+
+        Rectangle {
+            id: hubFill
+
+            anchors.fill: parent
+            radius: win.hudRadius
+            color: "#3C222228"
+            border.color: "#1AFFFFFF"
+            border.width: 1
+
+            layer.enabled: win.shadowOn
+            layer.samples: 4
+            layer.effect: CardShadow { intensity: 0.7; drop: 6 }
+        }
+
+        Column {
+            id: hubCol
+            x: 10
+            y: 7
+            spacing: 3
+
+            Text {
+                text: "hub " + hub.status
+                color: hub.ready ? win.ink : "#B8E8A2A8"
+                font.pixelSize: 11
+            }
+            Text {
+                visible: hub.toolLine.length > 0
+                text: "outil " + hub.toolLine
+                color: "#90e9eaee"
+                font.pixelSize: 11
+            }
+            Row {
+                spacing: 10
+                Text {
+                    text: hub.ready ? "couper" : "rejoindre"
+                    color: "#80e9eaee"
+                    font.pixelSize: 11
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: hub.ready ? hub.disconnectHub() : hub.connectHub()
+                    }
+                }
             }
         }
     }
@@ -449,82 +612,74 @@ Window {
 
     /* ------------------------------------------------------------- demarrage */
 
-    function seedFake(count) {
-        const agentLines = [
+    /*
+     * Bouchon de mesure : AICE_STRESS=1 pousse 2000 bulles factices UNIQUEMENT
+     * pour mesurer le frame time et la virtualisation (voir le brief M1). Ce
+     * n'est pas une conversation : la conversation vient du hub.
+     */
+    function stressSeed(count) {
+        const lines = [
             "Le flou est pose carte par carte, la fenetre reste translucide.",
             "Attrape la barre en bas : c'est toute la fenetre qui bouge.",
             "Une bulle sortie de la zone ne floute plus et ne capte plus les clics.",
             "La liste est virtualisee : seules les bulles affichees existent.",
             "Le fade se fait par carte, en haut et en bas de la zone."
         ];
-        const userLines = [
-            "On teste le principe.",
-            "800 x 800, comme convenu.",
-            "Deplace la barre, stp.",
-            "Et le scroll ?"
-        ];
         for (let i = 0; i < count; ++i) {
-            const agent = (i % 2) === 0;
-            const bank = agent ? agentLines : userLines;
-            let text = bank[i % bank.length];
+            let text = lines[i % lines.length];
             // Quelques bulles volontairement longues : wrap, hauteur variable, fade.
             const repeat = (i % 7) + 1;
             for (let k = 1; k < repeat; ++k)
-                text += " " + agentLines[(i + k) % agentLines.length];
+                text += " " + lines[(i + k) % lines.length];
             // insert(0) : le modele est du plus recent au plus vieux.
-            bubbleModel.insert(0, { role: agent ? "agent" : "user", text: text });
+            bubbleModel.insert(0, { role: (i % 2) === 0 ? "agent" : "user", text: text });
         }
     }
 
-    readonly property var replies: [
-        "Voici une reponse simulee, chunk par chunk, pour voir la carte grandir et la region de verre la suivre frame par frame.",
-        "Le texte arrive mot par mot : c'est le meme chemin que le vrai streaming, sans le moteur.",
-        "Bulle user a droite, bulle agent pleine largeur, et la barre qui suit en bas."
-    ];
-
+    /*
+     * Un tour avec le hub : la bulle user part tout de suite, la carte agent
+     * n'apparait qu'au premier chunk et grandit avec lui (le verre suit).
+     */
     function send() {
         const text = promptArea.text.trim();
         if (!text.length)
             return;
         promptArea.text = "";
 
-        // Du plus recent au plus vieux : la bulle user d'abord, puis la reponse
+        // Du plus recent au plus vieux : la bulle user d'abord, la reponse
         // agent par-dessus, donc la reponse se cale tout contre la barre.
         bubbleModel.insert(0, { role: "user", text: text });
         bubblesView.followNewest();
 
-        streamWords = replies[bubbleModel.count % replies.length].split(" ");
-        streamWord = 0;
-        streamRow = 0;
-        bubbleModel.insert(0, { role: "agent", text: "" });
-        generating = true;
-        streamTimer.start();
+        hub.send(text);
     }
 
-    function stopStream() {
-        streamTimer.stop();
-        generating = false;
-        streamWord = 0;
-        streamRow = -1;
-    }
-
-    Timer {
-        id: streamTimer
-        interval: 35
-        repeat: true
-        onTriggered: {
-            if (win.streamRow < 0 || win.streamWord >= win.streamWords.length) {
-                stop();
-                win.generating = false;
-                win.streamRow = -1;
-                return;
-            }
-            const word = win.streamWords[win.streamWord++];
-            const current = bubbleModel.get(win.streamRow).text;
-            bubbleModel.setProperty(win.streamRow, "text",
-                                    current.length ? current + " " + word : word);
-            bubblesView.followNewest();
+    function appendChunk(text) {
+        if (streamRow < 0) {
+            bubbleModel.insert(0, { role: "agent", text: "" });
+            streamRow = 0;
         }
+        const current = bubbleModel.get(streamRow).text;
+        bubbleModel.setProperty(streamRow, "text", current.length ? current + text : text);
+        bubblesView.followNewest();
+    }
+
+    function endTurn(stopReason) {
+        if (streamRow >= 0) {
+            // Un tour sans texte (outil seul, tour coupe) ne laisse pas de bulle vide.
+            if (!bubbleModel.get(streamRow).text.length)
+                bubbleModel.remove(streamRow);
+            streamRow = -1;
+        }
+        settleTimer.start();
+    }
+
+    Connections {
+        target: hub
+        // Le texte du tour arrive chunk par chunk — c'est le chemin du vrai
+        // streaming, celui qui fait grandir la carte et bouger le verre.
+        function onChunkReceived(text) { win.appendChunk(text); }
+        function onTurnEnded(stopReason) { win.endTurn(stopReason); }
     }
 
     // Bourrage d'affichage (AICE_PUMP=1) : redessine en continu, pour que le
@@ -554,9 +709,11 @@ Window {
         glass.attach(win);
         // Les bulles poussees hors de la zone de conversation sont exclues du verre.
         glass.setClipItem(bubblesView)
-        seedFake(glass.stress ? 2000 : 9);
+        if (glass.stress)
+            stressSeed(2000);
         promptArea.forceActiveFocus();
         win.visible = true;
         settleTimer.start();
+        hub.connectHub();
     }
 }
