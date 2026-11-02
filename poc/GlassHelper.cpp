@@ -17,6 +17,7 @@
 #include <QQuickWindow>
 #include <QSettings>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QVector>
 
@@ -38,6 +39,44 @@ constexpr int kMinCardSide = 4;
 
 /// Fenetre de log des mesures de frames (nombre de frames).
 constexpr qlonglong kLogEvery = 240;
+
+/*
+ * Les trois modes de fenetre du corps :
+ *   fenetre   : une fenetre ordinaire, qui peut se faire doubler et ne vit que sur
+ *               le bureau ou elle a ete posee — ce que la v2 fait aujourd'hui ;
+ *   au-dessus : gardee devant les autres fenetres ;
+ *   fixe      : au-dessus de tout, et posee sur tous les bureaux — le geste de la
+ *               v1 (couche du composeur, anchors, hors taskbar).
+ */
+const QStringList kModeNoms = { QStringLiteral("fenetre"),
+                                QStringLiteral("au-dessus"),
+                                QStringLiteral("fixe") };
+
+bool estCouche(const QString &mode)
+{
+    return !mode.isEmpty() && mode != kModeNoms.at(0);
+}
+
+/// Le mode tel que le corps le comprend, vide si ce n'est pas un mode connu.
+/// Les variantes acceptees sont celles qu'on pourrait taper de bonne foi.
+QString normaliserMode(const QString &brut)
+{
+    const QString a = brut.trimmed().toLower();
+    if (a.isEmpty())
+        return {};
+    if (a == QLatin1String("fenetre") || a == QLatin1String("normal")
+        || a == QLatin1String("0"))
+        return kModeNoms.at(0);
+    if (a == QLatin1String("au-dessus") || a == QLatin1String("au dessus")
+        || a == QLatin1String("dessus") || a == QLatin1String("above")
+        || a == QLatin1String("1"))
+        return kModeNoms.at(1);
+    if (a == QLatin1String("fixe") || a == QLatin1String("fix")
+        || a == QLatin1String("sticky") || a == QLatin1String("pin")
+        || a == QLatin1String("layer") || a == QLatin1String("2"))
+        return kModeNoms.at(2);
+    return {};
+}
 
 /// Fond de controle pour les captures : damier gris clair + bandes. Une ombre est
 /// vue sur le bureau floute par KWin a l'usage ; hors ecran, ce fond sert de
@@ -72,6 +111,24 @@ GlassHelper::GlassHelper(QObject *parent)
         && qEnvironmentVariable("AICE_PUMP") != "0";
     m_hud = qEnvironmentVariable("AICE_HUD") != "0";
     m_shadow = qEnvironmentVariable("AICE_SHADOW") != "0";
+
+    /*
+     * Le mode de fenetre se regle par /fenetre dans la barre (ou un clic dans la
+     * carte du hub) et survit aux lancements : la meme idee que voice/enabled.
+     * AICE_WINDOW_MODE=<mode> force le mode sans le persister (knob de test).
+     */
+    QString regle = qEnvironmentVariable("AICE_WINDOW_MODE");
+    if (regle.trimmed().isEmpty()) {
+        // AICE_LAYER=1 etait le bouton experimental du POC : il vaut « fixe ».
+        regle = qEnvironmentVariable("AICE_LAYER") == "1"
+            ? QStringLiteral("fixe")
+            : QSettings(QStringLiteral("a-ice"), QStringLiteral("a-ice"))
+                  .value(QStringLiteral("window/mode"))
+                  .toString();
+    }
+    m_mode = normaliserMode(regle);
+    if (m_mode.isEmpty())
+        m_mode = kModeNoms.at(0);
 }
 
 void GlassHelper::attach(QQuickWindow *window)
@@ -83,22 +140,41 @@ void GlassHelper::attach(QQuickWindow *window)
 
     const QString platformName = QGuiApplication::platformName();
 
-    // Overlay layer-shell (experimental, AICE_LAYER=1) : la fenetre devient une
-    // couche du composeur, hors taskbar et au-dessus de tout. Sans ancrage :
-    // c'est la position qui decide, ce qui laisse la porte ouverte au deplacement.
-    if (platformName == QLatin1String("wayland") && qEnvironmentVariable("AICE_LAYER") == "1") {
+    /*
+     * Les modes qui ne sont pas une fenetre ordinaire passent par une couche du
+     * composeur (le geste de la v1) : la surface est posee par le composeur, hors
+     * taskbar, et ne depend plus d'un bureau. Sans ancrage : c'est la position qui
+     * decide, ce qui laisse la porte ouverte au deplacement.
+     *
+     * « au-dessus » = couche au-dessus des fenetres ; « fixe » = couche par-dessus
+     * tout, y compris les applis en plein ecran.
+     */
+    if (platformName == QLatin1String("wayland") && estCouche(m_mode)) {
         auto *shell = LayerShellQt::Window::get(window);
-        shell->setLayer(LayerShellQt::Window::LayerOverlay);
+        shell->setLayer(m_mode == kModeNoms.at(2) ? LayerShellQt::Window::LayerOverlay
+                                                  : LayerShellQt::Window::LayerTop);
         shell->setAnchors(LayerShellQt::Window::Anchors()); // aucun ancrage
         shell->setExclusiveZone(-1);                        // ne reserve aucune place
         shell->setKeyboardInteractivity(
             LayerShellQt::Window::KeyboardInteractivityOnDemand);
-        shell->setScope(QStringLiteral("a-ice-poc"));
+        shell->setScope(QStringLiteral("a-ice"));
         m_layered = true;
     } else if (platformName == QLatin1String("xcb")) {
-        // X11 : KeepAbove + pas de taskbar via l'API X11 de KF6.
-        KX11Extras::setState(window->winId(), NET::KeepAbove | NET::SkipTaskbar);
+        // X11 : pas de couche, mais KeepAbove et — pour « fixe » — Sticky (posee
+        // sur tous les bureaux), plus SkipTaskbar dans les trois modes.
+        NET::States etats = NET::SkipTaskbar;
+        if (estCouche(m_mode))
+            etats |= NET::KeepAbove;
+        if (m_mode == kModeNoms.at(2))
+            etats |= NET::Sticky;
+        KX11Extras::setState(window->winId(), etats);
     }
+
+    // Ce que le composeur a vraiment pose : ce que Dimitri regarde, et ce que les
+    // logs relancent quand un mode ne fait pas ce qu'on attendait.
+    fprintf(stderr, "a-ice M1 : fenetre en mode « %s » sur %s — %s\n",
+            qUtf8Printable(m_mode), qPrintable(platformName),
+            m_layered ? "couche du composeur" : "fenetre ordinaire");
 
     // Position retrouvee de la session precedente (inutile en layer-shell :
     // c'est le composeur qui place la couche).
@@ -137,6 +213,59 @@ void GlassHelper::attach(QQuickWindow *window)
                 QGuiApplication::quit();
         });
     }
+}
+
+/*
+ * Le mode de fenetre demande. Il est persiste dans tous les cas : c'est le reglage
+ * qui vaudra au prochain lancement.
+ *
+ * Ce qui se peut en cours de route : changer de rang de couche (au-dessus -> fixe),
+ * et reposer les etats X11 d'une fenetre ordinaire. Ce qui ne se peut pas : virer
+ * une fenetre ordinaire en couche du composeur, ni l'inverse — le composeur choisit
+ * la surface a sa creation, pas apres. La, on laisse windowModeRestart le dire.
+ */
+void GlassHelper::setWindowMode(const QString &mode)
+{
+    const QString prochain = normaliserMode(mode);
+    if (prochain.isEmpty()) {
+        fprintf(stderr, "a-ice M1 : mode de fenetre « %s » inconnu (attendu : %s)\n",
+                qUtf8Printable(mode.trimmed()),
+                qUtf8Printable(kModeNoms.join(QStringLiteral(", "))));
+        return;
+    }
+    if (prochain == m_mode)
+        return;
+
+    const bool coucheAvant = estCouche(m_mode);
+    const bool coucheApres = estCouche(prochain);
+    m_mode = prochain;
+    QSettings(QStringLiteral("a-ice"), QStringLiteral("a-ice"))
+        .setValue(QStringLiteral("window/mode"), m_mode);
+
+    if (m_window) {
+        if (coucheAvant != coucheApres) {
+            m_modeRestart = true;
+            fprintf(stderr, "a-ice M1 : mode « %s » retenu — relancer le corps pour l'appliquer\n",
+                    qUtf8Printable(m_mode));
+        } else if (coucheApres && m_layered) {
+            // Deux couches : le composeur sait changer de rang sans recreer la surface.
+            LayerShellQt::Window::get(m_window)->setLayer(
+                m_mode == kModeNoms.at(2) ? LayerShellQt::Window::LayerOverlay
+                                          : LayerShellQt::Window::LayerTop);
+            m_modeRestart = false;
+        } else if (QGuiApplication::platformName() == QLatin1String("xcb")) {
+            NET::States etats = NET::SkipTaskbar;
+            if (coucheApres)
+                etats |= NET::KeepAbove;
+            if (m_mode == kModeNoms.at(2))
+                etats |= NET::Sticky;
+            KX11Extras::setState(m_window->winId(), etats);
+            m_modeRestart = false;
+        }
+    }
+
+    fprintf(stderr, "a-ice M1 : fenetre en mode « %s »\n", qUtf8Printable(m_mode));
+    emit windowModeChanged();
 }
 
 bool GlassHelper::startMove()

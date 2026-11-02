@@ -46,6 +46,15 @@ class GlassHelper : public QObject
     /// Ombres de carte activee au demarrage (AICE_SHADOW=0 pour les couper, et
     /// mesurer ainsi ce qu'elles coutent). Se bascule aussi depuis le badge.
     Q_PROPERTY(bool shadow READ shadow CONSTANT)
+    /// Mode de fenetre : "fenetre" (ordinaire, au gre du composeur), "au-dessus"
+    /// (gardee devant les autres fenetres), "fixe" (au-dessus de tout et posee sur
+    /// tous les bureaux, comme la v1). Regle par /fenetre, persiste, et 
+    /// AICE_WINDOW_MODE=<mode> au lancement.
+    Q_PROPERTY(QString windowMode READ windowMode NOTIFY windowModeChanged)
+    /// Le composeur decide de la nature de la surface a sa creation : passer d'une
+    /// fenetre ordinaire a une couche (et l'inverse) ne se peut pas en cours de
+    /// route. Ce drapeau dit que le reglage est pris, mais pour la prochaine ouverture.
+    Q_PROPERTY(bool windowModeRestart READ windowModeRestart NOTIFY windowModeChanged)
 
 public:
     explicit GlassHelper(QObject *parent = nullptr);
@@ -77,6 +86,11 @@ public:
     /// (degrade d'ombre, fade) sans avoir les yeux sur l'ecran.
     Q_INVOKABLE void grabShot(const QString &path);
 
+    /// Le mode de fenetre demande ("fenetre", "au-dessus" ou "fixe"), applique
+    /// quand le composeur sait le faire sans changer la surface, et persiste de
+    /// toute facon : il vaudra au prochain lancement.
+    Q_INVOKABLE void setWindowMode(const QString &mode);
+
     double frameMs() const { return m_frameMs; }
     double frameMax() const { return m_frameMax; }
     qlonglong frames() const { return m_frames; }
@@ -87,12 +101,15 @@ public:
     bool pump() const { return m_pump; }
     bool hud() const { return m_hud; }
     bool shadow() const { return m_shadow; }
+    QString windowMode() const { return m_mode; }
+    bool windowModeRestart() const { return m_modeRestart; }
 
 signals:
     void frameMsChanged();
     void cardsChanged();
     void moveNativeChanged();
     void resizeNativeChanged();
+    void windowModeChanged();
 
 private:
     struct Card {
@@ -120,6 +137,8 @@ private:
     bool m_pump = false;
     bool m_hud = true;
     bool m_shadow = true;
+    QString m_mode;                    // "fenetre", "au-dessus" ou "fixe"
+    bool m_modeRestart = false;        // le reglage attend la prochaine ouverture
     int m_excludedShown = -1;              // dernier compte d'exclusions affiche (debug)
     long m_verreShown = -1;               // dernier etat du verre affiche (debug)
     int m_cards = 0;

@@ -121,6 +121,11 @@ protocole rend, et le corps le rend.
    « le tour que nous avons lance » (pas d'historique rejoue, pas les tours des autres
    clients), `/voice on|off` (bascule si rien n'est ecrit) qui annule le tour si on coupe
    en pleine generation. Note : [M3e-voix.md](M3e-voix.md).
+6. **Modes de fenetre (M3f)** — trois modes reglables : `fenetre` (ordinaire, ce que la
+   v2 faisait jusqu'ici), `au-dessus` (gardee devant), `fixe` (au-dessus de tout et posee
+   sur tous les bureaux, le geste de la v1) — les deux derniers poses par LayerShellQt,
+   sans ancre pour garder le deplacement. `/fenetre <mode>` dans la barre, clic dans la
+   carte du hub, persiste dans `window/mode`. Note : [M3f-fenetres.md](M3f-fenetres.md).
 
 Vu du terminal (mesure, pas un oeil) : la fenetre ne swap pas de frame depuis
 l'agent, donc les cartes se dessinent mais ne se regardent pas. Ce qui suit

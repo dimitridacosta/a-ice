@@ -60,7 +60,11 @@ Window {
     minimumHeight: 380
     visible: false
     color: "transparent"
-    flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+    // Le drapeau « garde devant » ne se pose que pour le mode au-dessus : en mode
+    // fenetre le corps peut etre double comme n'importe quelle fenetre, et en mode
+    // fixe c'est la couche du composeur qui decide du rang.
+    flags: Qt.Window | Qt.FramelessWindowHint | Qt.Tool
+           | (glass.windowMode === "au-dessus" ? Qt.WindowStaysOnTopHint : 0)
 
     /*
      * Ombre de carte : l'effet d'ombre fourni par Qt, pose sur la matiere de la
@@ -1404,6 +1408,15 @@ Window {
                 font.family: win.uiFont
                 font.pixelSize: 10
             }
+            Text {
+                // Le mode de fenetre vecu (fenetre / au-dessus / fixe) : ce que le
+                // composeur a vraiment pose, plus ce qui reste a faire pour lui.
+                text: "fenetre " + glass.windowMode
+                      + (glass.windowModeRestart ? " · relancer pour appliquer" : "")
+                color: "#80e9eaee"
+                font.family: win.uiFont
+                font.pixelSize: 10
+            }
             Row {
                 spacing: 10
                 Text {
@@ -1441,6 +1454,20 @@ Window {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         onClicked: win.reglerVoix("")
+                    }
+                }
+                Text {
+                    // Le clic fait tourner les trois modes de fenetre (fenetre →
+                    // au-dessus → fixe). Le reglage est persiste : il vaudra aussi
+                    // au prochain lancement.
+                    text: "fenetre : " + glass.windowMode
+                    color: "#80e9eaee"
+                    font.family: win.uiFont
+                    font.pixelSize: 11
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: win.reglerFenetre("")
                     }
                 }
             }
@@ -1633,7 +1660,8 @@ Window {
      */
     readonly property var slashSettings: ["model", "mode", "thought"]
     // Les valeurs admises par les commandes que le corps rend lui-meme.
-    readonly property var slashPropres: ({ voice: ["on", "off"] })
+    readonly property var slashPropres: ({ voice: ["on", "off"],
+                                          fenetre: ["fenetre", "au-dessus", "fixe"] })
     readonly property int slashMaxRows: 7
 
     property var slashRows: []
@@ -1685,6 +1713,11 @@ Window {
                 name: "voice",
                 description: "la voix de la v1, au fil de l'eau — actuel " + (voice.on ? "montee" : "coupee"),
                 hint: "on|off",
+            },
+            {
+                name: "fenetre",
+                description: "normale, gardee devant, ou posee sur tous les bureaux — actuel " + glass.windowMode,
+                hint: "fenetre|au-dessus|fixe",
             },
         ];
         for (let i = 0; i < win.slashSettings.length; ++i) {
@@ -1840,6 +1873,19 @@ Window {
             win.computeSlash();
             return true;
         }
+        if (name === "fenetre") {
+            if (!argument.length) {
+                // Le mode seul : on ne le devine pas. On laisse la saisie en place et
+                // on ouvre les trois modes.
+                promptArea.text = "/fenetre ";
+                win.computeSlash();
+                return true;
+            }
+            win.reglerFenetre(argument);
+            promptArea.text = "";
+            win.computeSlash();
+            return true;
+        }
         if (win.slashSettings.indexOf(name) < 0)
             return false;
 
@@ -1975,7 +2021,7 @@ Window {
 
     /*
      * M3e — /voice on, /voice off, /voice (bascule), comme la v1. Couper la voix
-     * interrompt aussi le tour en cours : sans ga, du texte continuerait a
+     * interrompt aussi le tour en cours : sans quoi du texte continuerait a
      * arriver, et repartirait dans la voix suivante.
      */
     function reglerVoix(argument) {
@@ -1989,6 +2035,23 @@ Window {
 
         if (!voice.on && hub.generating)
             hub.cancelTurn();
+    }
+
+    /*
+     * M3f — les trois modes de fenetre : /fenetre <mode> dans la barre, ou un clic
+     * qui les fait tourner. Le corps persiste le choix (window/mode) ; voir
+     * GlassHelper::setWindowMode pour ce qui s'applique tout de suite et ce qui
+     * attend la prochaine ouverture.
+     */
+    readonly property var fenetreModes: ["fenetre", "au-dessus", "fixe"]
+
+    function reglerFenetre(argument) {
+        if (argument && argument.length) {
+            glass.setWindowMode(argument);
+            return;
+        }
+        const index = win.fenetreModes.indexOf(glass.windowMode);
+        glass.setWindowMode(win.fenetreModes[(index + 1) % win.fenetreModes.length]);
     }
 
     Connections {

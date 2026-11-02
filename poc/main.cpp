@@ -38,7 +38,9 @@ int main(int argc, char *argv[])
         "AICE_LAYER=1 pour l'overlay layer-shell, AICE_HUD=0 pour cacher les mesures, "
         "AICE_QML=/chemin/Main.qml pour iterer sans recompiler, "
         "AICE_SLASH='/mo,/model ' pour simuler la saisie slash (test M3d), "
-        "AICE_VOICE=0 pour mesurer sans voix (la voix se regle par /voice)."));
+        "AICE_VOICE=0 pour mesurer sans voix (la voix se regle par /voice), "
+        "AICE_WINDOW_MODE=fenetre|au-dessus|fixe pour forcer le mode de fenetre "
+        "(sinon celui laisse par /fenetre, « fenetre » par defaut)."));
     parser.addHelpOption();
     parser.addOption(QCommandLineOption(QStringLiteral("size"),
         QStringLiteral("Cote de la fenetre (defaut: 800), ou largeur x hauteur : 900x640."),
