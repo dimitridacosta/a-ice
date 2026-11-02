@@ -2,6 +2,8 @@
 
 *Écrit le 2026-10-31 par ddBot avec Dimitri. Branche `v2` créée depuis `voice` (HEAD de la branche vocale) ; le travail UI/vocal continue séparément sur `voice`.*
 
+*Le point complet de **tout ce que la branche contient** (les six étages M3 compris) : [ETAT.md](ETAT.md), fait le 2026-11-02.*
+
 ## Vision (Dimitri, 2026-10-31)
 - Un corps plus agréable : fluidité niveau **Zed IDE**, glassmorphism **parfait** accéléré GPU sur KDE/Bazzite.
 - Séparer complètement **GUI** et **moteur agentique** : la GUI n'est qu'un skin client du hub zcode-acp (déjà en place sur ddpc/if-pc-01) ; le moteur derrière est interchangeable (ZCode, Gemini, wrapper Strata…).
