@@ -11,6 +11,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
 #include <QQmlContext>
+#include <QStringList>
 #include <QUrl>
 
 #include <cstdio>
@@ -32,7 +33,8 @@ int main(int argc, char *argv[])
         "a-ice 2.0 M1 — POC UI (verre, bulles, barre grab). "
         "AICE_STRESS=1 pour 2000 bulles, AICE_PUMP=1 pour mesurer sans interaction, "
         "AICE_LAYER=1 pour l'overlay layer-shell, AICE_HUD=0 pour cacher les mesures, "
-        "AICE_QML=/chemin/Main.qml pour iterer sans recompiler."));
+        "AICE_QML=/chemin/Main.qml pour iterer sans recompiler, "
+        "AICE_SLASH='/mo,/model ' pour simuler la saisie slash (test M3d)."));
     parser.addHelpOption();
     parser.addOption(QCommandLineOption(QStringLiteral("size"),
         QStringLiteral("Cote de la fenetre (defaut: 800), ou largeur x hauteur : 900x640."),
@@ -102,6 +104,12 @@ int main(int argc, char *argv[])
     }
     engine.rootContext()->setContextProperty(QStringLiteral("pocWidth"), pocWidth);
     engine.rootContext()->setContextProperty(QStringLiteral("pocHeight"), pocHeight);
+
+    // AICE_SLASH="/mo,/model " : alimente la barre de prompt sans clavier, une fois
+    // la session ouverte, pour verifier les suggestions slash (test M3d).
+    engine.rootContext()->setContextProperty(QStringLiteral("slashInputs"),
+        qEnvironmentVariable("AICE_SLASH")
+            .split(QLatin1Char(','), Qt::SkipEmptyParts));
 
     // AICE_QML=/chemin/Main.qml : charge le QML depuis le disque au lieu de la
     // ressource embarquee. Pratique pour itere sur l'UI sans recompiler.

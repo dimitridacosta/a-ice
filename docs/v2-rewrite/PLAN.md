@@ -105,17 +105,30 @@ protocole rend, et le corps le rend.
    et le sentinel `__skip__` rendu « passer ». Reponse `accept` + contenu
    conforme, `cancel` a l'Échap. Mesure live : `AskUserQuestion` du moteur rendu
    en une seule carte (q_0 single).
+4. **Commandes slash (M3d)** — la liste vient du moteur (`available_commands_update`),
+   les valeurs des reglages de `configOptions` : carte de suggestions au-dessus de la
+   barre (Tab ou clic complete, Haut/Bas choisit, Entrée envoie quand la commande est
+   ecrite en entier, Échap efface la carte), `/new` rendu par le corps (le pont declare
+   cette commande hors service en mode app-server), `/model`, `/mode` et `/thought`
+   regles par `session/set_config_option` — pas par leur forme texte, qui fabrique un
+   faux message dans le fil — avec validation stricte contre les choix publies, et la
+   carte du hub qui affiche `modele · mode · pensee`. Mesure live : 24 commandes
+   publiees (dont 12 skills sans prefixe `$`), 7 modeles proposes, un reglage obtenu, un
+   reglage invente refuse. Note : [M3d-slash.md](M3d-slash.md).
 
 Vu du terminal (mesure, pas un oeil) : la fenetre ne swap pas de frame depuis
 l'agent, donc les cartes se dessinent mais ne se regardent pas. Ce qui suit
 attend le retour de Dimitri : le rendu a l'œil du markdown (tableaux, listes
 imbriquees), les clics et le clavier sur les cartes de permission et de
-question. Ce qui n'a pas pu etre verifie : que notre reponse gagne la course —
-le pont diffuse la demande a toutes les connexions de l'instance et garde la
-première réponse, et l'agent de voix (`zcode-emissary.mjs`) est connecte a la meme
-instance : c'est lui qui a tranche la question avant nous. Pour driver un tour
-depuis a-ice, il faut donc soit couper l'agent de voix, soit accepter de partager
-la main.
+question, et les suggestions slash a l'œil.
+
+La course des demandes est reglee (2026-11-02) : le pont diffuse la demande a toutes
+les connexions de l'instance et garde la premiere reponse, et l'agent de voix
+(`zcode-emissary.mjs`) repondait `cancelled` a tout ce qui n'etait pas une permission —
+il balayait donc nos questionnaires. Il ne repond plus qu'a ce qu'il sait rendre (note
+`memory/knowledge/incidents/a-ice-emissaire-elicitation-2026-11-02.md` dans le vault,
+et section 3 de [M3d-slash.md](M3d-slash.md)). Reste a le verifier a l'œil : relancer un
+`AskUserQuestion` pendant que l'agent de voix est branche.
 
 Reste pour M4 : polish du corps — ombres, dégradés, animations d'entrée, thème
 complet, doc utilisateur ; rejuger les acquis d'origin/v2 (layer-shell par

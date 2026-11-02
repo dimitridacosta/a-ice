@@ -443,6 +443,12 @@ void HubClient::disconnectHub()
     // pont mort ; elles reviennent de openSessionReady() a la reprise.
     sessionsValue.clear();
     emit sessionsChanged();
+    // Meme raison pour ce que le moteur publie : une commande annoncee par un pont
+    // mort ne doit pas rester proposable.
+    commandsValue.clear();
+    emit commandsChanged();
+    configOptionsValue.clear();
+    emit configOptionsChanged();
     resumed = false;
     emit resumedChanged();
     setStatus(QStringLiteral("debranche"));
@@ -786,15 +792,22 @@ void HubClient::onBridgeText(const QString &message)
         startSession();
     } else if (method == QStringLiteral("session/new")) {
         sessionIdValue = jsonId(result.value(QStringLiteral("sessionId")));
+        collectConfigOptions(result.value(QStringLiteral("configOptions")).toArray());
         resumed = false;
         emit resumedChanged();
         verifySessionFreshness();
     } else if (method == QStringLiteral("session/load")) {
         // L historique a defile pendant la requete (voir onBridgeNotification) :
         // la repondre veut dire que la conversation est la.
+        collectConfigOptions(result.value(QStringLiteral("configOptions")).toArray());
         openSessionReady();
     } else if (method == QStringLiteral("session/prompt")) {
         endTurn(result.value(QStringLiteral("stopReason")).toString());
+    } else if (method == QStringLiteral("session/set_config_option")) {
+        // Le pont repond la liste remise a jour (et la notifie a tous les clients
+        // branchess sur la session) : c est elle qui fait basculer l affichage.
+        collectConfigOptions(result.value(QStringLiteral("configOptions")).toArray());
+        setStatus(QStringLiteral("reglage obtenu du moteur"));
     }
 }
 
@@ -868,12 +881,246 @@ void HubClient::onBridgeNotification(const QJsonObject &msg)
         return;
     }
 
-    // plan, available_commands_update, usage_update : pas encore exploites ici.
+    // M3d — ce que le moteur publie, et qui doit suivre l ecran.
+    if (kind == QStringLiteral("available_commands_update")) {
+        collectCommands(update.value(QStringLiteral("availableCommands")).toArray());
+        return;
+    }
+
+    if (kind == QStringLiteral("config_option_update")) {
+        // Le pont peut le pousser en cours de tour (un outil qui change de mode)
+        // comme apres notre propre reglage : on rend ce qu il annonce.
+        collectConfigOptions(update.value(QStringLiteral("configOptions")).toArray());
+        return;
+    }
+
+    // plan, usage_update : pas encore exploites ici.
 }
 
 void HubClient::onBridgeError()
 {
     fail(QStringLiteral("pont ACP : ") + bridge->errorString());
+}
+
+/*
+ * M3d — ce que le moteur declare.
+ *
+ * `available_commands_update` : le pont publie SES commandes slash, par
+ * connexion, peu apres la reponse d ouverture (notification differee). C est la
+ * seule source de notre autocompletion : aucun nom n est durci cote corps, on
+ * rend {name, description, input.hint} tels qu ils arrivent.
+ *
+ * Les skills du moteur y voyagent aussi. Un client sans clientInfo — le notre,
+ * comme l'appli du telephone — les recoit SANS le prefixe « $ » que le pont
+ * reserve aux editeurs a groupage : la saisie /nom colle donc au nom affiche,
+ * et le pont admet les deux spellings.
+ */
+void HubClient::collectCommands(const QJsonArray &published)
+{
+    QVariantList rows;
+    for (const QJsonValue value : published) {
+        const QJsonObject entry = value.toObject();
+        const QString name = entry.value(QStringLiteral("name")).toString();
+        if (name.isEmpty())
+            continue;
+
+        QVariantMap row;
+        row.insert(QStringLiteral("name"), name);
+        row.insert(QStringLiteral("description"),
+                   entry.value(QStringLiteral("description")).toString());
+        row.insert(QStringLiteral("hint"), entry.value(QStringLiteral("input"))
+                                                    .toObject()
+                                                    .value(QStringLiteral("hint"))
+                                                    .toString());
+        rows.append(row);
+    }
+
+    if (rows == commandsValue)
+        return;
+    commandsValue = rows;
+    if (qEnvironmentVariableIsSet("AICE_DEBUG")) {
+        QStringList names;
+        for (const QVariant &row : rows)
+            names << row.toMap().value(QStringLiteral("name")).toString();
+        fprintf(stderr, "a-ice-m1 : %d commandes publiees : %s\n",
+                int(rows.size()), qUtf8Printable(names.join(QStringLiteral(" "))));
+    }
+    emit commandsChanged();
+}
+
+/*
+ * `configOptions` : les reglages que la session admet (modele, mode, niveau de
+ * pensee), arrives par la reponse de session/new ou session/load, puis par
+ * `config_option_update` a chaque changement — y compris quand le moteur change
+ * de mode lui-meme en cours de tour. La valeur d un choix est l identifiant
+ * exact que renvoie session/set_config_option (pour le modele, « fournisseur\modele »).
+ */
+void HubClient::collectConfigOptions(const QJsonArray &published)
+{
+    QVariantList rows;
+    for (const QJsonValue value : published) {
+        const QJsonObject option = value.toObject();
+        const QString id = option.value(QStringLiteral("id")).toString();
+        if (id.isEmpty())
+            continue;
+
+        QVariantList picks;
+        for (const QJsonValue choice : option.value(QStringLiteral("options")).toArray()) {
+            const QJsonObject row = choice.toObject();
+            const QString valueText = row.value(QStringLiteral("value")).toString();
+            if (valueText.isEmpty())
+                continue;
+            QVariantMap pick;
+            pick.insert(QStringLiteral("value"), valueText);
+            pick.insert(QStringLiteral("name"),
+                        row.value(QStringLiteral("name")).toString(valueText));
+            picks.append(pick);
+        }
+
+        QVariantMap row;
+        row.insert(QStringLiteral("id"), id);
+        row.insert(QStringLiteral("name"),
+                   option.value(QStringLiteral("name")).toString(id));
+        row.insert(QStringLiteral("currentValue"),
+                   option.value(QStringLiteral("currentValue")).toString());
+        row.insert(QStringLiteral("options"), picks);
+        rows.append(row);
+    }
+
+    if (rows.isEmpty() || rows == configOptionsValue)
+        return;
+    configOptionsValue = rows;
+    if (qEnvironmentVariableIsSet("AICE_DEBUG")) {
+        QStringList lines;
+        for (const QVariant &row : rows) {
+            const QVariantMap option = row.toMap();
+            lines << QStringLiteral("%1=%2 (%3 choix)")
+                         .arg(option.value(QStringLiteral("id")).toString())
+                         .arg(option.value(QStringLiteral("currentValue")).toString())
+                         .arg(option.value(QStringLiteral("options")).toList().size());
+        }
+        fprintf(stderr, "a-ice-m1 : reglages publies : %s\n", qUtf8Printable(lines.join(QStringLiteral(", "))));
+    }
+    emit configOptionsChanged();
+}
+
+/*
+ * Regler la session. On passe par la voie du protocole, pas par une commande
+ * slash : /model, /mode et /thought sont interceptes par le pont et rendent un
+ * chunk de texte dans LE FIL (un faux message dans la conversation, rejoue a la
+ * reprise de session). session/set_config_option regle sans laisser de trace.
+ *
+ * La valeur demandee n'est acceptee que si le moteur l'a publiee : valeur exacte,
+ * puis libelle exact (un modele s'affache « GLM-5.3 » mais s'identifie
+ * « fournisseur\GLM-5.3 »), puis commencement unique parmi les choix. Jamais une
+ * valeur inventee : le pont refuse autrement, et le refus se dit dans le statut.
+ */
+void HubClient::setConfigOption(const QString &configId, const QString &request)
+{
+    const QString wanted = request.trimmed();
+    if (configId.isEmpty() || wanted.isEmpty()) {
+        setStatus(QStringLiteral("reglage refuse : valeur vide"));
+        return;
+    }
+    if (!ready || sessionIdValue.isEmpty()) {
+        setStatus(QStringLiteral("reglage refuse : session fermee"));
+        return;
+    }
+
+    const QVariantList published = publishedOptions(configId);
+    if (published.isEmpty()) {
+        setStatus(QStringLiteral("reglage refuse : le moteur n'a pas publie ses choix"));
+        return;
+    }
+
+    QString value;
+    QString label;
+    QStringList candidates;
+    for (const QVariant &choice : published) {
+        const QVariantMap pick = choice.toMap();
+        const QString pickValue = pick.value(QStringLiteral("value")).toString();
+        const QString pickName = pick.value(QStringLiteral("name")).toString();
+        if (pickValue == wanted) {
+            value = pickValue;
+            label = pickName.isEmpty() ? pickValue : pickName;
+            break;
+        }
+        if (pickName.compare(wanted, Qt::CaseInsensitive) == 0) {
+            value = pickValue;
+            label = pickName;
+            break;
+        }
+        if (pickName.startsWith(wanted, Qt::CaseInsensitive)
+            || pickValue.startsWith(wanted, Qt::CaseInsensitive))
+            candidates << pickValue;
+    }
+    if (value.isEmpty() && candidates.size() == 1) {
+        value = candidates.first();
+        label = labelFor(published, value);
+    }
+    if (value.isEmpty()) {
+        QStringList names;
+        for (const QVariant &choice : published)
+            names << choice.toMap().value(QStringLiteral("name")).toString();
+        setStatus(QStringLiteral("reglage refuse : %1 hors des choix publies (%2)")
+                      .arg(wanted, names.join(QStringLiteral(", "))));
+        return;
+    }
+
+    rpcSend(QStringLiteral("session/set_config_option"),
+            QJsonObject{{QStringLiteral("sessionId"), sessionIdValue},
+                       {QStringLiteral("configId"), configId},
+                       {QStringLiteral("value"), value}},
+            false);
+    setStatus(QStringLiteral("reglage %1 : %2…").arg(configId, label));
+}
+
+// La valeur courante d un reglage, telle que le pont la publie (chaine vide si
+// le pont ne l a pas encore publiee).
+QString HubClient::configValue(const QString &configId) const
+{
+    for (const QVariant &entry : configOptionsValue) {
+        const QVariantMap option = entry.toMap();
+        if (option.value(QStringLiteral("id")).toString() != configId)
+            continue;
+        return option.value(QStringLiteral("currentValue")).toString();
+    }
+    return QString();
+}
+
+// Les choix publies d un reglage ([{value, name}]) — la matiere de
+// l autocompletion cote barre de prompt.
+QVariantList HubClient::publishedOptions(const QString &configId) const
+{
+    for (const QVariant &entry : configOptionsValue) {
+        const QVariantMap option = entry.toMap();
+        if (option.value(QStringLiteral("id")).toString() == configId)
+            return option.value(QStringLiteral("options")).toList();
+    }
+    return {};
+}
+
+// Le libelle que le moteur donne a cette valeur.
+QString HubClient::labelFor(const QVariantList &choices, const QString &value) const
+{
+    for (const QVariant &choice : choices) {
+        const QVariantMap pick = choice.toMap();
+        if (pick.value(QStringLiteral("value")).toString() == value) {
+            const QString name = pick.value(QStringLiteral("name")).toString();
+            return name.isEmpty() ? value : name;
+        }
+    }
+    return value;
+}
+
+// Le libelle de la valeur courante d un reglage — plus court et plus parlant que
+// l identifiant complet (un modele s identifie « fournisseur\modele »).
+QString HubClient::configLabel(const QString &configId) const
+{
+    const QString current = configValue(configId);
+    if (current.isEmpty())
+        return QString();
+    return labelFor(publishedOptions(configId), current);
 }
 
 /*

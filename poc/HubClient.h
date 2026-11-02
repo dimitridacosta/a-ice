@@ -77,6 +77,11 @@ class HubClient : public QObject
     Q_PROPERTY(bool elicitationPending READ isElicitationPending NOTIFY permissionChanged)
     Q_PROPERTY(QString elicitationMessage READ elicitationMessage NOTIFY permissionChanged)
     Q_PROPERTY(QVariantList elicitationFields READ elicitationFields NOTIFY permissionChanged)
+    // M3d — ce que le moteur DECLARE, et rien d'autre : les commandes slash qu il
+    // publie (available_commands_update) et les reglages de session qu il tient
+    // (configOptions : modele, mode, pensee). Aucun nom n est durci ici.
+    Q_PROPERTY(QVariantList commands READ commands NOTIFY commandsChanged)
+    Q_PROPERTY(QVariantList configOptions READ configOptions NOTIFY configOptionsChanged)
 
 public:
     explicit HubClient(QObject *parent = nullptr);
@@ -110,6 +115,12 @@ public:
     // title, state, workspace, workspacePath} par session vivante.
     QVariantList sessions() const { return sessionsValue; }
 
+    // Commandes slash publiees par le pont : {name, description, hint}.
+    QVariantList commands() const { return commandsValue; }
+    // Reglages de session publies par le pont : {id, name, currentValue,
+    // options: [{value, name}]} — l id est ce que regoit setConfigOption().
+    QVariantList configOptions() const { return configOptionsValue; }
+
     // Rejoindre le hub : instance (réutilisée ou incubée), puis session ACP.
     Q_INVOKABLE void connectHub();
     Q_INVOKABLE void disconnectHub();
@@ -133,6 +144,15 @@ public:
     // Repartir d une conversation vierge : on oublie la session gardeée.
     Q_INVOKABLE void startFreshConversation();
 
+    // Regler la session (M3d) : modele, mode ou niveau de pensee. La valeur est
+    // celle que le pont a publiee dans configOptions — jamais une valeur inventee,
+    // le pont refuse autrement (et un echec se dit dans le statut).
+    Q_INVOKABLE void setConfigOption(const QString &configId, const QString &value);
+    // La valeur courante d un reglage ("" si le pont ne l a pas encore publiee).
+    Q_INVOKABLE QString configValue(const QString &configId) const;
+    // Le libelle le plus court qui designe cette valeur (pour l affichage).
+    Q_INVOKABLE QString configLabel(const QString &configId) const;
+
     // Multi-sessions : la liste des sessions du hub, et l'ouverture de l'une
     // d'elles (session/load, l'historique rejoue comme a la reprise).
     Q_INVOKABLE void listSessions();
@@ -155,6 +175,9 @@ signals:
     // La conversation change de session : le modele de bulles doit se vider
     // avant que l historique rejoue n arrive.
     void historyReset();
+    // Le moteur a publie ses commandes ou ses reglages : l autocompletion doit suivre.
+    void commandsChanged();
+    void configOptionsChanged();
 
 private:
     // Les etapes de la prise de contact, dans l'ordre.
@@ -176,6 +199,11 @@ private:
     void onBridgeNotification(const QJsonObject &msg);
     void showPermissionRequest(const QJsonObject &msg);
     void showElicitationRequest(const QJsonObject &msg);
+    void collectCommands(const QJsonArray &published);
+    void collectConfigOptions(const QJsonArray &published);
+    // Lectures des reglages publies, pour le reglage lui-meme et l autocompletion.
+    QVariantList publishedOptions(const QString &configId) const;
+    QString labelFor(const QVariantList &choices, const QString &value) const;
     void rejectRequest(const QJsonObject &msg);
     void settleAsk(const QString &kind, const QString &toolCallId);
     void clearPermissionAsks();
@@ -209,6 +237,8 @@ private:
     QString openWorkspacePath;   // le workspace cible de cette ouverture
     QString retryPromptText;    // le tour relance si la session etait perimeee
     QVariantList sessionsValue;
+    QVariantList commandsValue;
+    QVariantList configOptionsValue;
     int promptRecoveries = 0;
 
     qint64 nextRpcId = 1;

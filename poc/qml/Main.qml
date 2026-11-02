@@ -562,6 +562,12 @@ Window {
                 font.family: win.uiFont
                 font.pixelSize: 14
                 wrapMode: TextEdit.Wrap
+                // M3d : l'autocompletion suit ce qui est ecrit. Une saisie
+                // nouvelle efface l'annulation demandee au clavier (Echap).
+                onTextChanged: {
+                    win.slashDismissed = false;
+                    win.computeSlash();
+                }
                 // TextEdit (Qt Quick de base) n'a pas de signal accepted :
                 // l'entrée est traitee a la main, et shift+entrée garde son
                 // comportement (saut de ligne dans le prompt).
@@ -583,8 +589,32 @@ Window {
                         event.accepted = true;
                         return;
                     }
+                    // Une suggestion en cours d'abord : Entree complete le / a
+                    // moitie ecrit, et n'envoie que ce qui est deja la commande
+                    // entiere — sinon on enverrait un texte moitie au moteur.
+                    if (win.slashRows.length && !win.slashComplete()) {
+                        win.slashApply(win.slashRow >= 0 ? win.slashRow : 0);
+                        event.accepted = true;
+                        return;
+                    }
                     win.send();
                     event.accepted = true;
+                }
+                // Tab complete la suggestion surlignee, les fleches la choisissent
+                // tant qu'elle est la (elles gardent leur role dans le texte sinon).
+                Keys.onTabPressed: (event) => {
+                    if (!win.slashRows.length)
+                        return;
+                    win.slashApply(win.slashRow >= 0 ? win.slashRow : 0);
+                    event.accepted = true;
+                }
+                Keys.onUpPressed: (event) => {
+                    if (win.slashStep(-1))
+                        event.accepted = true;
+                }
+                Keys.onDownPressed: (event) => {
+                    if (win.slashStep(1))
+                        event.accepted = true;
                 }
                 Keys.onEscapePressed: (event) => {
                     if (hub.permissionPending) {
@@ -594,6 +624,12 @@ Window {
                     }
                     if (hub.elicitationPending) {
                         hub.respondElicitation("cancel", ({}));
+                        event.accepted = true;
+                        return;
+                    }
+                    // Premier Echap : effacer les suggestions. Second : fermer.
+                    if (win.slashRows.length) {
+                        win.slashCollapse();
                         event.accepted = true;
                         return;
                     }
@@ -1169,6 +1205,120 @@ Window {
         }
     }
 
+    /* --------------------------------- carte de suggestions slash (M3d) */
+
+    /*
+     * Ce que le moteur publie, rendu tel quel : les commandes slash qu il admet
+     * (available_commands_update) et les valeurs que la session admet pour ses
+     * reglages (configOptions). Rien n est durci : /compact, /goal, les skills ou
+     * les commandes de plugin apparaissent parce que le moteur les declare.
+     *
+     * La carte se pose au-dessus de la barre (elle ne marche pas dessus) et ne
+     * vit que pendant la saisie d un /. Elle est declaree apres les cartes de
+     * demande : si elles sont montees en meme temps, c elle qui recoit les clics.
+     */
+    Item {
+        id: slashCard
+
+        property bool glassCard: true
+        property int glassRadius: win.hudRadius
+
+        visible: win.slashRows.length > 0
+
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: (askCard.visible ? askCard.y
+              : (permCard.visible ? permCard.y : pill.y)) - height - 10
+
+        width: Math.min(win.width - 2 * win.inset, 470)
+        height: slashCol.height + 14
+
+        onXChanged: glass.scheduleRefresh()
+        onYChanged: glass.scheduleRefresh()
+        onHeightChanged: glass.scheduleRefresh()
+        onWidthChanged: glass.scheduleRefresh()
+        onVisibleChanged: glass.scheduleRefresh()
+
+        Rectangle {
+            id: slashFill
+
+            anchors.fill: parent
+            radius: win.hudRadius
+            color: "#8A1E2430"
+            border.color: "#26FFFFFF"
+            border.width: 1
+
+            layer.enabled: win.shadowOn
+            layer.samples: 4
+            layer.effect: CardShadow { intensity: 0.5 }
+        }
+
+        Column {
+            id: slashCol
+            x: 8
+            y: 7
+            spacing: 2
+            width: slashCard.width - 16
+
+            Text {
+                width: slashCol.width
+                text: "commandes du moteur  \u00b7  Tab complete, Entree envoie"
+                color: "#70e9eaee"
+                font.family: win.uiFont
+                font.pixelSize: 10
+            }
+
+            Repeater {
+                model: win.slashRows
+
+                delegate: Rectangle {
+                    id: row
+
+                    required property var modelData
+                    required property int index
+
+                    width: slashCol.width
+                    height: 22
+                    radius: 7
+                    color: index === win.slashRow ? "#28FFFFFF" : "transparent"
+
+                    Text {
+                        id: rowCommand
+                        x: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(190, implicitWidth)
+                        text: row.modelData.command
+                        color: index === win.slashRow ? win.ink : "#C0e9eaee"
+                        font.family: win.uiFont
+                        font.pixelSize: 12
+                        font.bold: true
+                        elide: Text.ElideRight
+                    }
+
+                    Text {
+                        anchors.left: rowCommand.right
+                        anchors.leftMargin: 10
+                        anchors.right: parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: (row.modelData.description || "")
+                              + (row.modelData.hint ? "  \u00b7  " + row.modelData.hint : "")
+                              + (row.modelData.current ? "  \u00b7  actuel" : "")
+                        color: "#80e9eaee"
+                        font.family: win.uiFont
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: win.slashApply(index)
+                    }
+                }
+            }
+        }
+    }
+
     /* -------------------------------------------------- carte du hub (M2) */
 
     Item {
@@ -1234,6 +1384,17 @@ Window {
                 font.family: win.uiFont
                 font.pixelSize: 10
             }
+            Text {
+                visible: hub.ready && hub.configLabel("model").length > 0
+                // Les reglages que le moteur publie et que /model, /mode et
+                // /thought changent (voir la carte de suggestions de la barre).
+                text: "modele " + hub.configLabel("model")
+                      + (hub.configLabel("mode").length ? "  \u00b7  mode " + hub.configLabel("mode") : "")
+                      + (hub.configLabel("thought").length ? "  \u00b7  pensee " + hub.configLabel("thought") : "")
+                color: "#70e9eaee"
+                font.family: win.uiFont
+                font.pixelSize: 10
+            }
             Row {
                 spacing: 10
                 Text {
@@ -1251,7 +1412,7 @@ Window {
                     // La session vecue est gardee par le client : sans cette sortie
                     // on resterait bloque sur une conversation usée.
                     visible: hub.ready
-                    text: "conversation neuve"
+                    text: "conversation neuve (/new)"
                     color: "#80e9eaee"
                     font.family: win.uiFont
                     font.pixelSize: 11
@@ -1429,6 +1590,213 @@ Window {
         markdown.parse("seed-md", sample);
     }
 
+    /* -------------------------------------------------- commandes slash (M3d) */
+
+    /*
+     * La barre ne connait qu'une chose : ce que le moteur publie. Les commandes
+     * viennent de available_commands_update, les valeurs des reglages de
+     * configOptions — aucune liste n est durcie ici.
+     *
+     * Trois choses sont neanmoins rendues par le corps, parce que le pont ne les
+     * rend pas comme nous :
+     *   - /new : commande du TUI Z Code, declaree « hors service » en mode
+     *   app-server (le pont repond une erreur) — c est nous qui ouvrons la
+     *   conversation vierge ;
+     *   - /model, /mode, /thought : le pont les intercepte et rend un chunk de
+     *   texte DANS LE FIL (un faux message dans la conversation, rejoue a la
+     *   reprise). On regle par session/set_config_option, qui ne laisse pas de trace.
+     *
+     * Le reste part tel quel : le pont sait faire (compact, goal, auto, fork,
+     * quota, mcp, init, resume, skills, commandes de plugin) — et un nom qu il ne
+     * connait pas non plus part au modele comme texte ordinaire, sans casser le tour.
+     */
+    readonly property var slashSettings: ["model", "mode", "thought"]
+    readonly property int slashMaxRows: 7
+
+    property var slashRows: []
+    property int slashRow: -1
+    // Le fait que la carte de suggestions a ete ecartee au clavier : une saisie
+    // nouvelle la fait repartir.
+    property bool slashDismissed: false
+
+    // L option publiee par le pont pour ce reglage, null si elle n est pas la.
+    function slashConfig(id) {
+        const published = hub.configOptions;
+        for (let i = 0; i < published.length; ++i) {
+            if (published[i].id === id)
+                return published[i];
+        }
+        return null;
+    }
+
+    // Ce que le corps rend lui-meme, pose avant les commandes du pont (les noms
+    // identiques du pont sont alors ignores).
+    function slashOwn() {
+        const own = [{
+            name: "new",
+            description: "conversation vierge — rendue par a-ice",
+            hint: "",
+        }];
+        for (let i = 0; i < win.slashSettings.length; ++i) {
+            const id = win.slashSettings[i];
+            const option = win.slashConfig(id);
+            const current = option && option.currentValue.length ? hub.configLabel(id) : "";
+            own.push({
+                name: id,
+                description: current.length ? "actuel : " + current : "choix non publies par le moteur",
+                hint: "<choix>",
+            });
+        }
+        return own;
+    }
+
+    /*
+     * Les lignes propositionnables, selon ce qui est ecrit. Deux regimes : le nom
+     * de la commande, puis — pour un reglage dont le nom est ecrit et suivi d un
+     * espace — la valeur de l argument, parmi les choix publies par le moteur.
+     */
+    function computeSlash() {
+        if (!promptArea.text.startsWith("/") || win.slashDismissed) {
+            if (win.slashRows.length)
+                win.slashRows = [];
+            win.slashRow = -1;
+            glass.scheduleRefresh();
+            return;
+        }
+
+        const text = promptArea.text;
+        const body = text.slice(1);
+        const cut = body.search(/\s/);
+        const token = cut < 0 ? body : body.slice(0, cut);
+        const arg = cut < 0 ? "" : body.slice(cut + 1).replace(/^\s+/, "");
+        const lower = token.toLowerCase();
+
+        const rows = [];
+        const option = win.slashConfig(token);
+        // Le nom du reglage est ecrit ET suivi d un blanc : on en est a l argument.
+        const argument = !!option && (arg.length > 0 || cut >= 0);
+
+        if (argument) {
+            const wanted = arg.toLowerCase();
+            for (let i = 0; i < option.options.length && rows.length < win.slashMaxRows; ++i) {
+                const pick = option.options[i];
+                const label = pick.name || pick.value;
+                if (label.toLowerCase().indexOf(wanted) < 0
+                    && pick.value.toLowerCase().indexOf(wanted) < 0)
+                    continue;
+                rows.push({
+                    command: "/" + token + " " + pick.value,
+                    insert: "/" + token + " " + pick.value,
+                    name: label,
+                    description: label === pick.value ? "" : pick.value,
+                    hint: pick.value === option.currentValue ? "" : "",
+                    current: pick.value === option.currentValue,
+                });
+            }
+        } else {
+            const seen = {};
+            const candidates = win.slashOwn().concat(hub.commands);
+            for (let i = 0; i < candidates.length && rows.length < win.slashMaxRows; ++i) {
+                const entry = candidates[i];
+                if (!entry.name || seen[entry.name])
+                    continue;
+                seen[entry.name] = true;
+                if (lower.length && entry.name.toLowerCase().indexOf(lower) !== 0)
+                    continue;
+                rows.push({
+                    command: "/" + entry.name,
+                    // Une commande qui attend un argument se complete d un blanc :
+                    // c est lui qui ouvre la liste des valeurs.
+                    insert: "/" + entry.name + (entry.hint ? " " : ""),
+                    name: entry.name,
+                    description: entry.description || "",
+                    hint: entry.hint || "",
+                    current: false,
+                });
+            }
+        }
+
+        // La premiere ligne est toujours surlignee : Tab ou Entree n'ont plus qu'a
+        // choisir, et les fleches déplacent ce choix.
+        win.slashRows = rows;
+        win.slashRow = rows.length ? 0 : -1;
+        glass.scheduleRefresh();
+    }
+
+    // Ce qui est ecrit est-il deja la commande entiere ? (alors Entree envoie)
+    function slashComplete() {
+        const rows = win.slashRows;
+        if (!rows.length)
+            return false;
+        const row = rows[win.slashRow >= 0 ? win.slashRow : 0];
+        return promptArea.text.trim().toLowerCase() === row.command.toLowerCase();
+    }
+
+    // Deplacer le choix dans la liste. Rend false si la liste n'existe pas : les
+    // fleches restent alors dans le texte de la saisie.
+    function slashStep(delta) {
+        const count = win.slashRows.length;
+        if (!count)
+            return false;
+        let next = win.slashRow < 0 ? 0 : win.slashRow + delta;
+        if (next < 0)
+            next = count - 1;
+        if (next >= count)
+            next = 0;
+        win.slashRow = next;
+        return true;
+    }
+
+    // Ecrire la ligne choisie dans la barre.
+    function slashApply(row) {
+        const rows = win.slashRows;
+        if (row < 0 || row >= rows.length)
+            return;
+        promptArea.text = rows[row].insert;
+        promptArea.cursorPosition = promptArea.text.length;
+        win.computeSlash();
+    }
+
+    // Effacer les suggestions sans toucher a la saisie (Echap).
+    function slashCollapse() {
+        win.slashRows = [];
+        win.slashRow = -1;
+        win.slashDismissed = true;
+        glass.scheduleRefresh();
+    }
+
+    /*
+     * Une saisie qui commence par / : rend true quand c'est le corps qui traite,
+     * false quand le texte doit partir au pont tel quel.
+     */
+    function slashDispatch(text) {
+        const parts = text.slice(1).split(/\s+/).filter((part) => part.length);
+        const name = parts.length ? parts[0] : "";
+        const argument = parts.slice(1).join(" ");
+
+        if (name === "new") {
+            win.newConversation();
+            promptArea.text = "";
+            win.computeSlash();
+            return true;
+        }
+        if (win.slashSettings.indexOf(name) < 0)
+            return false;
+
+        if (!argument.length) {
+            // Le reglage sans choix : on ne regle rien soi-meme. On laisse la
+            // saisie en place et on ouvre la liste des valeurs publieses.
+            promptArea.text = "/" + name + " ";
+            win.computeSlash();
+            return true;
+        }
+
+        hub.setConfigOption(name, argument);
+        promptArea.text = "";
+        win.computeSlash();
+        return true;
+    }
+
     /*
      * Un tour avec le hub : la bulle user part tout de suite, la carte agent
      * n'apparait qu'au premier chunk et grandit avec lui (le verre suit).
@@ -1437,6 +1805,12 @@ Window {
         const text = promptArea.text.trim();
         if (!text.length)
             return;
+
+        // Une commande rendue par le corps ne part pas au moteur et n'ouvre pas
+        // de bulle : elle se dit dans la carte du hub (le statut).
+        if (text.startsWith("/") && win.slashDispatch(text))
+            return;
+
         promptArea.text = "";
 
         // Du plus recent au plus vieux : la bulle user d'abord, la reponse
@@ -1572,6 +1946,26 @@ Window {
         onTriggered: {
             bubblesView.followNewest()
             glass.scheduleRefresh()
+        }
+    }
+
+    // Test M3d (AICE_SLASH="/mo,/model ") : ecrire dans la barre sans clavier, une
+    // fois la session ouverte, et regarder ce que les suggestions deviennent.
+    Timer {
+        id: slashTestTimer
+        running: slashInputs.length > 0
+        interval: 4000
+        onTriggered: {
+            for (const input of slashInputs) {
+                win.slashDismissed = false;
+                promptArea.text = input;
+                win.computeSlash();
+                const names = win.slashRows.map((row) => row.command);
+                console.log("slash " + JSON.stringify(input) + " -> "
+                            + JSON.stringify(names) + " complet " + win.slashComplete());
+            }
+            promptArea.text = "";
+            win.computeSlash();
         }
     }
 
