@@ -19,6 +19,9 @@
 #include "GlassHelper.h"
 #include "HubClient.h"
 #include "Markdown.h"
+#include "VoiceControl.h"
+
+#include "../src/voice/VoiceStream.h"
 
 int main(int argc, char *argv[])
 {
@@ -34,7 +37,8 @@ int main(int argc, char *argv[])
         "AICE_STRESS=1 pour 2000 bulles, AICE_PUMP=1 pour mesurer sans interaction, "
         "AICE_LAYER=1 pour l'overlay layer-shell, AICE_HUD=0 pour cacher les mesures, "
         "AICE_QML=/chemin/Main.qml pour iterer sans recompiler, "
-        "AICE_SLASH='/mo,/model ' pour simuler la saisie slash (test M3d)."));
+        "AICE_SLASH='/mo,/model ' pour simuler la saisie slash (test M3d), "
+        "AICE_VOICE=0 pour mesurer sans voix (la voix se regle par /voice)."));
     parser.addHelpOption();
     parser.addOption(QCommandLineOption(QStringLiteral("size"),
         QStringLiteral("Cote de la fenetre (defaut: 800), ou largeur x hauteur : 900x640."),
@@ -51,12 +55,17 @@ int main(int argc, char *argv[])
     GlassHelper glass;
     HubClient hub;
     Markdown markdown;
+    // La voix de la v1, reprise telle quelle : le module (src/voice/) n'est pas
+    // reecrit, seul ce pont est nouveau.
+    VoiceStream voiceStream;
+    VoiceControl voice(&voiceStream);
     if (parser.isSet(QStringLiteral("workspace")))
         hub.setWorkspace(parser.value(QStringLiteral("workspace")));
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("glass"), &glass);
     engine.rootContext()->setContextProperty(QStringLiteral("hub"), &hub);
     engine.rootContext()->setContextProperty(QStringLiteral("markdown"), &markdown);
+    engine.rootContext()->setContextProperty(QStringLiteral("voice"), &voice);
 
     // Test M2 : --prompt envoie un tour des que la session est ouverte,
     // AICE_TURN_QUIT ferme la fenetre des que ce tour est termine.
@@ -82,6 +91,43 @@ int main(int argc, char *argv[])
             fprintf(stderr, "a-ice-m1 : hub %s\n", qUtf8Printable(hub.status()));
         });
     }
+
+    /*
+     * M3e — la voix streaming de la v1, branchee sur les chunks du hub.
+     *
+     * Le filtre « ce qui peut etre dit » (ni markdown, ni emoji, ni blocs de code)
+     * est dans VoiceStream : on ne lui livre que du texte d'agent, jamais notre
+     * propre saisie.
+     *
+     * Le seuil est le tour QUE NOUS avons lance : la reprise d'une session
+     * (session/load) rejoue tout l'historique par le meme signal, et un client
+     * voisin (le telephone) peut parler sur la meme session — sans ce seuil le corps
+     * lirait a voix haute toute la conversation reprise.
+     */
+    QObject::connect(&hub, &HubClient::chunkReceived, &voiceStream,
+                     [&hub, &voiceStream](const QString &messageId, const QString &role, const QString &text) {
+        (void) messageId;
+        if (!hub.isGenerating() || role != QLatin1String("agent"))
+            return;
+        voiceStream.feed(text);
+    });
+
+    // Fin de tour : on vide le buffer (flush force, meme sans ponctuation finale).
+    // Coupe ou erreur : on ne relance pas ce qui restait — on coupe, comme la v1.
+    QObject::connect(&hub, &HubClient::turnEnded, &voiceStream, [&voiceStream](const QString &stopReason) {
+        if (stopReason == QLatin1String("cancelled") || stopReason == QLatin1String("error"))
+            voiceStream.stop();
+        else
+            voiceStream.finish();
+    });
+    QObject::connect(&hub, &HubClient::failed, &voiceStream, [&voiceStream]() { voiceStream.stop(); });
+
+    // Serveur TTS mort en plein stream : le module a abandonne le tour (plus de
+    // requeue, donc pas d'empilement fantome) — le corps le dit, une fois.
+    QObject::connect(&voiceStream, &VoiceStream::serverLost, &app, [&voiceStream]() {
+        fprintf(stderr, "a-ice-m1 : voix %s (serveur injoignable en pleine lecture)\n",
+                qUtf8Printable(voiceStream.statusLine()));
+    });
     if (qEnvironmentVariableIsSet("AICE_TURN_QUIT")) {
         QObject::connect(&hub, &HubClient::turnEnded, &app, [&app, &chunks, &chars](const QString &reason) {
             fprintf(stderr, "a-ice-m1 : tour termine (%s), %d chunks, %d caracteres\n",

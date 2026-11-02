@@ -12,6 +12,13 @@ add_executable(a-ice-m1
     HubClient.cpp
     Markdown.h
     Markdown.cpp
+    VoiceControl.h
+    VoiceControl.cpp
+    # M3e : la voix de la v1, reprise TELLE QUELLE (src/voice/) — chunker adaptatif,
+    # filtre « ce qui peut etre dit », verrou anti-avalanche, coupe immediate. Le POC
+    # n'en fait qu'un pont (VoiceControl) : il n'y a pas deux voix dans a-ice.
+    ../src/voice/VoiceStream.h
+    ../src/voice/VoiceStream.cpp
 )
 
 qt_add_resources(a-ice-m1 "aice_m1"

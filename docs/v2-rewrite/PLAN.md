@@ -115,6 +115,12 @@ protocole rend, et le corps le rend.
    carte du hub qui affiche `modele · mode · pensee`. Mesure live : 24 commandes
    publiees (dont 12 skills sans prefixe `$`), 7 modeles proposes, un reglage obtenu, un
    reglage invente refuse. Note : [M3d-slash.md](M3d-slash.md).
+5. **Voix streaming (M3e)** — `src/voice/VoiceStream` de la v1 **portee telle quelle**
+   (chunkur adaptatif, filtre prononçable, memes constantes, meme cle `voice/enabled`),
+   branchee sur les chunks du hub par un pont de 80 lignes (`poc/VoiceControl`) : seuil
+   « le tour que nous avons lance » (pas d'historique rejoue, pas les tours des autres
+   clients), `/voice on|off` (bascule si rien n'est ecrit) qui annule le tour si on coupe
+   en pleine generation. Note : [M3e-voix.md](M3e-voix.md).
 
 Vu du terminal (mesure, pas un oeil) : la fenetre ne swap pas de frame depuis
 l'agent, donc les cartes se dessinent mais ne se regardent pas. Ce qui suit

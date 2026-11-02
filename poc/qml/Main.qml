@@ -1395,6 +1395,15 @@ Window {
                 font.family: win.uiFont
                 font.pixelSize: 10
             }
+            Text {
+                // La voix de la v1, reprise telle quelle (src/voice/) : le
+                // diagnostic du module — etat, buffer local, avance estimee.
+                visible: hub.ready
+                text: "voix " + voice.status
+                color: voice.on ? "#A8F0A0B0" : "#60e9eaee"
+                font.family: win.uiFont
+                font.pixelSize: 10
+            }
             Row {
                 spacing: 10
                 Text {
@@ -1410,7 +1419,7 @@ Window {
                 }
                 Text {
                     // La session vecue est gardee par le client : sans cette sortie
-                    // on resterait bloque sur une conversation usée.
+                    // on resterait bloque sur une conversation usee.
                     visible: hub.ready
                     text: "conversation neuve (/new)"
                     color: "#80e9eaee"
@@ -1420,6 +1429,18 @@ Window {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         onClicked: win.newConversation()
+                    }
+                }
+                Text {
+                    // La meme commande que /voice dans la barre, a portee de clic.
+                    text: voice.on ? "couper la voix" : "monter la voix"
+                    color: "#80e9eaee"
+                    font.family: win.uiFont
+                    font.pixelSize: 11
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: win.reglerVoix("")
                     }
                 }
             }
@@ -1611,6 +1632,8 @@ Window {
      * connait pas non plus part au modele comme texte ordinaire, sans casser le tour.
      */
     readonly property var slashSettings: ["model", "mode", "thought"]
+    // Les valeurs admises par les commandes que le corps rend lui-meme.
+    readonly property var slashPropres: ({ voice: ["on", "off"] })
     readonly property int slashMaxRows: 7
 
     property var slashRows: []
@@ -1618,8 +1641,10 @@ Window {
     // Le fait que la carte de suggestions a ete ecartee au clavier : une saisie
     // nouvelle la fait repartir.
     property bool slashDismissed: false
+    // Harnais AICE_SLASH : la prochaine entree de la liste a traiter.
+    property int slashFed: 0
 
-    // L option publiee par le pont pour ce reglage, null si elle n est pas la.
+    // L'option publiee par le pont pour ce reglage, null si elle n'est pas la.
     function slashConfig(id) {
         const published = hub.configOptions;
         for (let i = 0; i < published.length; ++i) {
@@ -1629,14 +1654,39 @@ Window {
         return null;
     }
 
+    /*
+     * Les valeurs propositionnables d'un mot : celles que le moteur publie pour un
+     * reglage, plus celles que nos propres commandes admettent (elles n'ont pas de
+     * choix publies, donc c'est nous qui les declarons).
+     */
+    function slashChoices(id) {
+        const moteur = slashConfig(id);
+        if (moteur)
+            return moteur;
+        const propres = slashPropres[id];
+        if (!propres)
+            return null;
+        const choix = [];
+        for (const valeur of propres)
+            choix.push({ value: valeur, name: valeur });
+        return { id: id, currentValue: "", options: choix };
+    }
+
     // Ce que le corps rend lui-meme, pose avant les commandes du pont (les noms
     // identiques du pont sont alors ignores).
     function slashOwn() {
-        const own = [{
-            name: "new",
-            description: "conversation vierge — rendue par a-ice",
-            hint: "",
-        }];
+        const own = [
+            {
+                name: "new",
+                description: "conversation vierge — rendue par a-ice",
+                hint: "",
+            },
+            {
+                name: "voice",
+                description: "la voix de la v1, au fil de l'eau — actuel " + (voice.on ? "montee" : "coupee"),
+                hint: "on|off",
+            },
+        ];
         for (let i = 0; i < win.slashSettings.length; ++i) {
             const id = win.slashSettings[i];
             const option = win.slashConfig(id);
@@ -1672,8 +1722,8 @@ Window {
         const lower = token.toLowerCase();
 
         const rows = [];
-        const option = win.slashConfig(token);
-        // Le nom du reglage est ecrit ET suivi d un blanc : on en est a l argument.
+        const option = win.slashChoices(token);
+        // Le nom du reglage est ecrit ET suivi d'un blanc : on en est a l'argument.
         const argument = !!option && (arg.length > 0 || cut >= 0);
 
         if (argument) {
@@ -1693,7 +1743,11 @@ Window {
                     current: pick.value === option.currentValue,
                 });
             }
-        } else {
+        } else if (!arg.length) {
+            // Le nom de la commande, tant qu'aucun argument n'est ecrit.
+            // (Une commande qui n'est pas un reglage publie n'a pas de valeurs a
+            // proposer : son argument est libre — et si on proposait quand meme, le
+            // completage effacerait ce que l'utilisateur vient d'ecrire.)
             const seen = {};
             const candidates = win.slashOwn().concat(hub.commands);
             for (let i = 0; i < candidates.length && rows.length < win.slashMaxRows; ++i) {
@@ -1776,6 +1830,12 @@ Window {
 
         if (name === "new") {
             win.newConversation();
+            promptArea.text = "";
+            win.computeSlash();
+            return true;
+        }
+        if (name === "voice") {
+            win.reglerVoix(argument);
             promptArea.text = "";
             win.computeSlash();
             return true;
@@ -1901,13 +1961,34 @@ Window {
         bubbleModel.clear();
         streamRow = -1;
         streamMessageId = "";
+        // Le buffer local de la voix suit la conversation : ce qui etait en train
+        // de preparer un chunk ne doit pas partir dans la session d'apres.
+        voice.resetBuffer();
         settleTimer.start();
     }
 
-    /* Repartre d une conversation vierge : le modele se vide avec la session. */
+    /* Repartir d une conversation vierge : le modele se vide avec la session. */
     function newConversation() {
         resetConversation();
         hub.startFreshConversation();
+    }
+
+    /*
+     * M3e — /voice on, /voice off, /voice (bascule), comme la v1. Couper la voix
+     * interrompt aussi le tour en cours : sans ga, du texte continuerait a
+     * arriver, et repartirait dans la voix suivante.
+     */
+    function reglerVoix(argument) {
+        const a = (argument || "").trim().toLowerCase();
+        if (a === "on" || a === "1" || a === "true")
+            voice.turnOn();
+        else if (a === "off" || a === "0" || a === "false")
+            voice.turnOff();
+        else
+            voice.toggle();
+
+        if (!voice.on && hub.generating)
+            hub.cancelTurn();
     }
 
     Connections {
@@ -1949,21 +2030,34 @@ Window {
         }
     }
 
-    // Test M3d (AICE_SLASH="/mo,/model ") : ecrire dans la barre sans clavier, une
-    // fois la session ouverte, et regarder ce que les suggestions deviennent.
+    /*
+     * Test M3d/M3e (AICE_SLASH="/mo,/model ") : ecrire dans la barre sans clavier,
+     * une entree toutes les 6 s une fois la session ouverte, et regarder ce que les
+     * suggestions deviennent. Une entree prefixed par "@" est dispatchee comme une
+     * vraie saisie de la barre : c'est la seule facon de tester /voice en plein tour.
+     */
     Timer {
         id: slashTestTimer
-        running: slashInputs.length > 0
-        interval: 4000
+        running: win.slashFed < slashInputs.length
+        interval: 6000
+        repeat: true
         onTriggered: {
-            for (const input of slashInputs) {
-                win.slashDismissed = false;
-                promptArea.text = input;
-                win.computeSlash();
-                const names = win.slashRows.map((row) => row.command);
-                console.log("slash " + JSON.stringify(input) + " -> "
-                            + JSON.stringify(names) + " complet " + win.slashComplete());
+            const input = slashInputs[win.slashFed];
+            ++win.slashFed;
+
+            if (input.startsWith("@")) {
+                const saisie = input.slice(1);
+                console.log("dispatch " + JSON.stringify(saisie) + " -> "
+                            + String(win.slashDispatch(saisie)));
+                return;
             }
+
+            win.slashDismissed = false;
+            promptArea.text = input;
+            win.computeSlash();
+            const names = win.slashRows.map((row) => row.command);
+            console.log("slash " + JSON.stringify(input) + " -> "
+                        + JSON.stringify(names) + " complet " + win.slashComplete());
             promptArea.text = "";
             win.computeSlash();
         }
